@@ -195,10 +195,11 @@ OPJ_BOOL opj_tls_set(opj_tls_t* tls, int key, void* value,
 typedef struct opj_thread_pool_t opj_thread_pool_t;
 
 /** Create a new thread pool.
- * num_thread must nominally be >= 1 to create a real thread pool. If num_threads
- * is negative or null, then a dummy thread pool will be created. All functions
+ * num_thread must be >= 2 to create a real thread pool. If num_threads
+ * is 1, negative or null, then a dummy thread pool will be created. All functions
  * operating on the thread pool will work, but job submission will be run
- * synchronously in the calling thread.
+ * synchronously in the calling thread. (A one-worker pool would add per-job
+ * overhead while the caller waits, and could not run anything in parallel.)
  *
  * @param num_threads the number of threads to allocate for this thread pool.
  * @return a thread pool handle, or NULL in case of failure (can for example happen if the library

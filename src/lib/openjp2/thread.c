@@ -632,7 +632,12 @@ opj_thread_pool_t* opj_thread_pool_create(int num_threads)
     }
     tp->state = OPJWTS_OK;
 
-    if (num_threads <= 0) {
+    /* A single worker cannot run anything concurrently with the caller, which
+     * only waits for it: it would add a thread start, two allocations and a
+     * mutex round-trip per job for no parallelism. Run jobs inline instead.
+     * Callers only compare the thread count against 1, so the work done is
+     * identical either way. */
+    if (num_threads <= 1) {
         tp->tls = opj_tls_new();
         if (!tp->tls) {
             opj_free(tp);

@@ -1380,7 +1380,8 @@ OPJ_API OPJ_BOOL OPJ_CALLCONV opj_decoder_set_strict_mode(opj_codec_t *p_codec,
  * and before opj_start_compress() for the encoding side.
  *
  * @param p_codec       decompressor or compressor handler
- * @param num_threads   number of threads.
+ * @param num_threads   number of threads. 0 and 1 both run all work in the
+ *                      calling thread (no worker thread is created for 1).
  *
  * @return OPJ_TRUE     if the function is successful.
  */
