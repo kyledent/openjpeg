@@ -511,3 +511,45 @@ foreach(found_but_no_test ${existing_filenames})
   add_test(NAME Found-But-No-Test-${found_but_no_test} COMMAND ${CMAKE_COMMAND} -E echo "${found_but_no_test}")
   set_tests_properties(Found-But-No-Test-${found_but_no_test} PROPERTIES WILL_FAIL TRUE)
 endforeach()
+
+#########################################################################
+# HTJ2K block decoder implementations
+# The HT block decoder has a portable scalar implementation and SIMD ones,
+# one of which is chosen at run time (see src/lib/openjp2/ht_dec.c). Decode
+# the HT files with the default choice and with the scalar decoder forced
+# (OPJ_HT_DECODER=scalar), check both against the md5 references and check
+# that the two outputs are identical.
+foreach(ht_impl default scalar)
+  file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/ht_${ht_impl}/Temporary)
+endforeach()
+foreach(htfile Bretagne1_ht.j2k Bretagne1_ht_lossy.j2k byte.jph byte_causal.jhc)
+  foreach(ht_impl default scalar)
+    set(ht_dir ${CMAKE_CURRENT_BINARY_DIR}/ht_${ht_impl})
+    add_test(NAME NR-DEC-${htfile}-ht_${ht_impl}-decode
+      COMMAND opj_decompress
+      -i ${INPUT_NR}/htj2k/${htfile}
+      -o ${ht_dir}/Temporary/${htfile}.png
+      )
+    if(ht_impl STREQUAL "scalar")
+      set_tests_properties(NR-DEC-${htfile}-ht_${ht_impl}-decode
+                           PROPERTIES ENVIRONMENT OPJ_HT_DECODER=scalar)
+    endif()
+    add_test(NAME NR-DEC-${htfile}-ht_${ht_impl}-decode-md5
+      COMMAND ${CMAKE_COMMAND}
+      -DREFFILE:STRING=${CMAKE_CURRENT_SOURCE_DIR}/md5refs.txt
+      -DOUTFILENAME:STRING=${ht_dir}/Temporary/${htfile}.png
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/checkmd5refs.cmake
+      WORKING_DIRECTORY ${ht_dir}
+      )
+    set_tests_properties(NR-DEC-${htfile}-ht_${ht_impl}-decode-md5
+                         PROPERTIES DEPENDS NR-DEC-${htfile}-ht_${ht_impl}-decode)
+  endforeach()
+  add_test(NAME NR-DEC-${htfile}-ht_default_vs_scalar
+    COMMAND ${CMAKE_COMMAND} -E compare_files
+    ${CMAKE_CURRENT_BINARY_DIR}/ht_default/Temporary/${htfile}.png
+    ${CMAKE_CURRENT_BINARY_DIR}/ht_scalar/Temporary/${htfile}.png
+    )
+  set_tests_properties(NR-DEC-${htfile}-ht_default_vs_scalar
+                       PROPERTIES DEPENDS
+                       "NR-DEC-${htfile}-ht_default-decode;NR-DEC-${htfile}-ht_scalar-decode")
+endforeach()

@@ -1603,6 +1603,11 @@ void opj_t1_destroy(opj_t1_t *p_t1)
 
     opj_free(p_t1->cblkdatabuffer);
 
+    if (p_t1->ht_dec_ws) {
+        opj_aligned_free(p_t1->ht_dec_ws);
+        p_t1->ht_dec_ws = 00;
+    }
+
     opj_free(p_t1);
 }
 

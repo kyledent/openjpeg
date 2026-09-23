@@ -72,6 +72,68 @@ if(BUILD_JPIP)
   )
 endif()
 
+# HTJ2K block decoder: an AVX2 implementation, compiled for x86 / x86-64
+# targets and selected at run time when the CPU supports AVX2 (see
+# ht_dec.c; the environment variable OPJ_HT_DECODER=scalar forces the
+# portable decoder).
+option(OPJ_HT_DEC_SIMD "Build the SIMD (AVX2) HTJ2K block decoder, chosen at run time" ON)
+mark_as_advanced(OPJ_HT_DEC_SIMD)
+if(OPJ_HT_DEC_SIMD)
+  set(_opj_ht_avx2_flags "")
+  set(_opj_ht_x86 FALSE)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^([xX]86_64|AMD64|amd64|i[3-6]86|[xX]86)$")
+    set(_opj_ht_x86 TRUE)
+  endif()
+  # The file must only be compiled for x86 targets: skip multi-architecture
+  # and non-x86 Apple builds.
+  list(LENGTH CMAKE_OSX_ARCHITECTURES _opj_ht_n_osx_archs)
+  if(_opj_ht_n_osx_archs GREATER 1)
+    set(_opj_ht_x86 FALSE)
+  elseif(_opj_ht_n_osx_archs EQUAL 1 AND NOT CMAKE_OSX_ARCHITECTURES MATCHES "^(x86_64|x86_64h|i386)$")
+    set(_opj_ht_x86 FALSE)
+  endif()
+  if(_opj_ht_x86)
+    if(MSVC AND CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+      set(_opj_ht_avx2_flags "/arch:AVX2")
+    elseif(NOT MSVC AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|Intel")
+      set(_opj_ht_avx2_flags "-mavx2")
+    endif()
+  endif()
+  if(_opj_ht_avx2_flags)
+    include(CheckCSourceCompiles)
+    set(CMAKE_REQUIRED_FLAGS "${_opj_ht_avx2_flags}")
+    check_c_source_compiles("
+#include <immintrin.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+int main(void) {
+  __m256i v = _mm256_set1_epi32(1);
+#if defined(_MSC_VER)
+  int regs[4];
+  __cpuidex(regs, 7, 0);
+  if ((_xgetbv(0) & 6) != 6) return 1;
+#else
+  __builtin_cpu_init();
+  if (!__builtin_cpu_supports(\"avx2\")) return 1;
+#endif
+  v = _mm256_sllv_epi32(v, v);
+  return _mm256_extract_epi16(v, 0) == 2 ? 0 : 1;
+}" OPJ_HAVE_HT_DEC_AVX2_COMPILER)
+    unset(CMAKE_REQUIRED_FLAGS)
+    if(OPJ_HAVE_HT_DEC_AVX2_COMPILER)
+      set(OPENJPEG_SRCS ${OPENJPEG_SRCS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/ht_dec_avx2.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/ht_dec_simd.h
+      )
+      set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/ht_dec_avx2.c
+        PROPERTIES COMPILE_FLAGS "${_opj_ht_avx2_flags}")
+      set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/ht_dec.c
+        PROPERTIES COMPILE_DEFINITIONS OPJ_HAVE_HT_DEC_AVX2)
+    endif()
+  endif()
+endif()
+
 option(OPJ_DISABLE_TPSOT_FIX "Disable TPsot==TNsot fix. See https://github.com/uclouvain/openjpeg/issues/254." OFF)
 if(OPJ_DISABLE_TPSOT_FIX)
   add_definitions(-DOPJ_DISABLE_TPSOT_FIX)
@@ -211,4 +273,12 @@ if(BUILD_UNIT_TESTS AND UNIX)
     if(OPJ_USE_THREAD AND Threads_FOUND AND CMAKE_USE_PTHREADS_INIT)
         target_link_libraries(test_sparse_array ${CMAKE_THREAD_LIBS_INIT})
     endif(OPJ_USE_THREAD AND Threads_FOUND AND CMAKE_USE_PTHREADS_INIT)
+
+    # HT block decoder: scalar vs default (SIMD when available) implementation
+    add_executable(test_ht_dec test_ht_dec.c)
+    target_link_libraries(test_ht_dec m ${OPENJPEG_LIBRARY_NAME})
+    if(OPJ_USE_THREAD AND Threads_FOUND AND CMAKE_USE_PTHREADS_INIT)
+        target_link_libraries(test_ht_dec ${CMAKE_THREAD_LIBS_INIT})
+    endif(OPJ_USE_THREAD AND Threads_FOUND AND CMAKE_USE_PTHREADS_INIT)
+    # (registered as a test in tests/CMakeLists.txt)
 endif(BUILD_UNIT_TESTS AND UNIX)

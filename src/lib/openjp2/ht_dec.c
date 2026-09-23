@@ -46,6 +46,13 @@
 
 #include "t1_ht_luts.h"
 
+#if defined(OPJ_HAVE_HT_DEC_AVX2)
+#include "ht_dec_simd.h"
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+#endif
+
 /////////////////////////////////////////////////////////////////////////////
 // compiler detection
 /////////////////////////////////////////////////////////////////////////////
@@ -1096,6 +1103,61 @@ static OPJ_BOOL opj_t1_allocate_buffers(
     return OPJ_TRUE;
 }
 
+#if defined(OPJ_HAVE_HT_DEC_AVX2)
+//************************************************************************/
+/** @brief Tells whether the CPU and the operating system support AVX2
+  */
+static OPJ_BOOL opj_t1_ht_cpu_has_avx2(void)
+{
+#if defined(_MSC_VER)
+    int regs[4];
+    __cpuid(regs, 0);
+    if (regs[0] < 7) {
+        return OPJ_FALSE;
+    }
+    __cpuid(regs, 1);
+    // OSXSAVE (bit 27) and AVX (bit 28)
+    if ((regs[2] & (1 << 27)) == 0 || (regs[2] & (1 << 28)) == 0) {
+        return OPJ_FALSE;
+    }
+    // the operating system saves the XMM and YMM registers
+    if ((_xgetbv(0) & 6) != 6) {
+        return OPJ_FALSE;
+    }
+    __cpuidex(regs, 7, 0);
+    return (regs[1] & (1 << 5)) != 0 ? OPJ_TRUE : OPJ_FALSE; // AVX2
+#elif defined(__GNUC__)
+    // also checks that the operating system saves the YMM registers
+    __builtin_cpu_init();
+    return __builtin_cpu_supports("avx2") ? OPJ_TRUE : OPJ_FALSE;
+#else
+    return OPJ_FALSE;
+#endif
+}
+#endif
+
+//************************************************************************/
+/** @brief Chooses the HT block decoder implementation
+  *
+  *  The fastest implementation the build and the CPU support is used.
+  *  Setting the environment variable OPJ_HT_DECODER to "scalar" forces
+  *  the portable scalar decoder, e.g. to compare the two; any other value
+  *  is ignored.
+  */
+static OPJ_UINT32 opj_t1_ht_select_impl(void)
+{
+    const char* env = getenv("OPJ_HT_DECODER");
+    if (env != NULL && strcmp(env, "scalar") == 0) {
+        return OPJ_HT_DEC_IMPL_SCALAR;
+    }
+#if defined(OPJ_HAVE_HT_DEC_AVX2)
+    if (opj_t1_ht_cpu_has_avx2()) {
+        return OPJ_HT_DEC_IMPL_AVX2;
+    }
+#endif
+    return OPJ_HT_DEC_IMPL_SCALAR;
+}
+
 /**
 Decode 1 HT code-block
 @param t1 T1 handle
@@ -1411,6 +1473,46 @@ OPJ_BOOL opj_t1_ht_decode_cblk(opj_t1_t *t1,
         }
         return OPJ_FALSE;
     }
+
+    if (t1->ht_dec_impl == OPJ_HT_DEC_IMPL_UNSET) {
+        t1->ht_dec_impl = opj_t1_ht_select_impl();
+    }
+#if defined(OPJ_HAVE_HT_DEC_AVX2)
+    if (t1->ht_dec_impl == OPJ_HT_DEC_IMPL_AVX2 && t1->ht_dec_ws == NULL) {
+        t1->ht_dec_ws = opj_aligned_32_malloc(sizeof(opj_ht_dec_simd_ws_t));
+        if (t1->ht_dec_ws == NULL) {
+            t1->ht_dec_impl = OPJ_HT_DEC_IMPL_SCALAR; // fall back
+        } else {
+            opj_ht_dec_avx2_init((opj_ht_dec_simd_ws_t*)t1->ht_dec_ws);
+        }
+    }
+    if (t1->ht_dec_impl == OPJ_HT_DEC_IMPL_AVX2) {
+        // All the checks above are common to both decoders; the SIMD
+        // decoder performs the remaining ones (MEL, U_q, samples outside
+        // the code-block) itself.
+        opj_ht_simd_cblk_t cb;
+        cb.coded_data = coded_data;
+        cb.zero_bplanes = zero_bplanes;
+        cb.numbps = p;
+        cb.Mb = cblk->Mb;
+        cb.num_passes = num_passes;
+        cb.lengths1 = lengths1;
+        cb.lengths2 = lengths2;
+        cb.lcup = lcup;
+        cb.scup = scup;
+        cb.width = (OPJ_UINT32)width;
+        cb.height = (OPJ_UINT32)height;
+        cb.stripe_causal = stripe_causal;
+        if (opj_ht_dec_cblk_avx2((opj_ht_dec_simd_ws_t*)t1->ht_dec_ws, &cb,
+                                 t1->data) == OPJ_HT_SIMD_OK) {
+            return OPJ_TRUE;
+        }
+        // The code-block is malformed. Decode it again with the scalar
+        // decoder below, so that the error is detected and reported
+        // exactly as the scalar decoder does it (the checks can trigger
+        // in a different order in the two decoders).
+    }
+#endif
 
     // init structures
     if (mel_init(&mel, coded_data, lcup, scup) == OPJ_FALSE) {

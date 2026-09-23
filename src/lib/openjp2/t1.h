@@ -178,6 +178,14 @@ in T1.C are used by some function in TCD.C.
 /** Flags for 4 consecutive rows of a column */
 typedef OPJ_UINT32 opj_flag_t;
 
+/** HT block decoder implementations (values of opj_t1_t::ht_dec_impl).
+    The implementation is chosen once per opj_t1_t, on its first HT
+    code-block (see ht_dec.c). The SIMD decoders produce bit-exactly the
+    samples of the scalar decoder, and reject the same code-blocks. */
+#define OPJ_HT_DEC_IMPL_UNSET   0 /**< not chosen yet */
+#define OPJ_HT_DEC_IMPL_SCALAR  1 /**< portable decoder of ht_dec.c */
+#define OPJ_HT_DEC_IMPL_AVX2    2 /**< AVX2 decoder of ht_dec_avx2.c */
+
 /**
 Tier-1 coding (coding of code-block coefficients)
 */
@@ -207,6 +215,13 @@ typedef struct opj_t1 {
     OPJ_BYTE    *cblkdatabuffer;
     /* Maximum size available in cblkdatabuffer */
     OPJ_UINT32   cblkdatabuffersize;
+
+    /* The 2 variables below are only used by the HT decoder (ht_dec.c) */
+    /* HT block decoder implementation (OPJ_HT_DEC_IMPL_*), chosen on the
+       first HT code-block; may be set beforehand to force one */
+    OPJ_UINT32   ht_dec_impl;
+    /* Workspace of the SIMD HT block decoder, allocated on first use */
+    void        *ht_dec_ws;
 } opj_t1_t;
 
 /** @name Exported functions */

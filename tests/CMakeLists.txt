@@ -129,6 +129,13 @@ add_test(NAME reject_ht_prec26_guard4 COMMAND test_encode_roundtrip -mode 64 -pr
 add_test(NAME reject_ht_guard0_checker COMMAND test_encode_roundtrip -mode 64 -prec 8 -w 256 -h 256 -checker 2 -guard 0 -expect-reject)
 add_test(NAME roundtrip_ht_guard1_checker COMMAND test_encode_roundtrip -mode 64 -prec 8 -w 256 -h 256 -checker 2 -guard 1)
 
+# HT block decoder: the scalar and the default (SIMD when the CPU supports
+# it) implementations must agree on random code-blocks. The test program
+# uses internal functions of the library and is built with the unit tests.
+if(BUILD_UNIT_TESTS AND UNIX)
+  add_test(NAME ht_dec_scalar_vs_default COMMAND test_ht_dec 20000)
+endif()
+
 # Let's try a couple of possibilities:
 add_test(NAME tte0 COMMAND test_tile_encoder)
 add_test(NAME tte1 COMMAND test_tile_encoder 3 2048 2048 1024 1024 8 1 tte1.j2k)
