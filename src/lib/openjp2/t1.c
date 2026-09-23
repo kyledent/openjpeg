@@ -187,7 +187,10 @@ static OPJ_FLOAT64 opj_t1_getwmsedec(
     const OPJ_FLOAT64 * mct_norms,
     OPJ_UINT32 mct_numcomps);
 
-/** Return "cumwmsedec" that should be used to increase tile->distotile */
+/** Return "cumwmsedec" that should be used to increase tile->distotile.
+ * When compute_distortion is false the distortion estimates are not
+ * computed (they are 0): valid when no quality layer has a rate or
+ * distortion target, since nothing else reads them. */
 static double opj_t1_encode_cblk(opj_t1_t *t1,
                                  opj_tcd_cblk_enc_t* cblk,
                                  OPJ_UINT32 orient,
@@ -196,6 +199,7 @@ static double opj_t1_encode_cblk(opj_t1_t *t1,
                                  OPJ_UINT32 qmfbid,
                                  OPJ_FLOAT64 stepsize,
                                  OPJ_UINT32 cblksty,
+                                 OPJ_BOOL compute_distortion,
                                  OPJ_UINT32 numcomps,
                                  const OPJ_FLOAT64 * mct_norms,
                                  OPJ_UINT32 mct_numcomps);
@@ -388,8 +392,10 @@ Encode significant pass
                                 ci); \
             OPJ_UINT32 ctxt2 = opj_t1_getctxno_sc(lu); \
             v = opj_smr_sign(*l_datap); \
-            *nmsedec += opj_t1_getnmsedec_sig(opj_smr_abs(*l_datap), \
-                                              (OPJ_UINT32)bpno); \
+            if (nmsedec) { \
+                *nmsedec += opj_t1_getnmsedec_sig(opj_smr_abs(*l_datap), \
+                                                  (OPJ_UINT32)bpno); \
+            } \
 /* #ifdef DEBUG_ENC_SIG */ \
 /*            fprintf(stderr, "   ctxt2=%d\n", ctxt2); */ \
 /* #endif */ \
@@ -491,7 +497,9 @@ static void opj_t1_enc_sigpass(opj_t1_t *t1,
     DOWNLOAD_MQC_VARIABLES(mqc, curctx, a, c, ct);
     const OPJ_INT32* datap = t1->data;
 
-    *nmsedec = 0;
+    if (nmsedec) {
+        *nmsedec = 0;
+    }
 #ifdef DEBUG_ENC_SIG
     fprintf(stderr, "enc_sigpass: bpno=%d\n", bpno);
 #endif
@@ -747,8 +755,10 @@ Encode refinement pass step
         const OPJ_UINT32 shift_flags = (flags >> ((ci) * 3U)); \
         OPJ_UINT32 ctxt = opj_t1_getctxno_mag(shift_flags); \
         OPJ_UINT32 abs_data = opj_smr_abs(*datap); \
-        *nmsedec += opj_t1_getnmsedec_ref(abs_data, \
-                                          (OPJ_UINT32)bpno); \
+        if (nmsedec) { \
+            *nmsedec += opj_t1_getnmsedec_ref(abs_data, \
+                                              (OPJ_UINT32)bpno); \
+        } \
         v = ((OPJ_INT32)abs_data & one) ? 1 : 0; \
 /* #ifdef DEBUG_ENC_REF */ \
 /*        fprintf(stderr, "  ctxt=%d\n", ctxt); */ \
@@ -825,7 +835,9 @@ static void opj_t1_enc_refpass(
     DOWNLOAD_MQC_VARIABLES(mqc, curctx, a, c, ct);
     const OPJ_INT32* datap = t1->data;
 
-    *nmsedec = 0;
+    if (nmsedec) {
+        *nmsedec = 0;
+    }
 #ifdef DEBUG_ENC_REF
     fprintf(stderr, "enc_refpass: bpno=%d\n", bpno);
 #endif
@@ -1093,8 +1105,10 @@ Encode clean-up pass step
                         *flagsp, \
                         flagsp[-1], flagsp[1], \
                         ci); \
-            *nmsedec += opj_t1_getnmsedec_sig(opj_smr_abs(*l_datap), \
-                                                (OPJ_UINT32)bpno); \
+            if (nmsedec) { \
+                *nmsedec += opj_t1_getnmsedec_sig(opj_smr_abs(*l_datap), \
+                                                  (OPJ_UINT32)bpno); \
+            } \
             ctxt2 = opj_t1_getctxno_sc(lu); \
 /* #ifdef DEBUG_ENC_CLN */ \
 /*           printf("   ctxt2=%d\n", ctxt2); */ \
@@ -1174,7 +1188,9 @@ static void opj_t1_enc_clnpass(
     opj_flag_t *f = &T1_FLAGS(0, 0);
     const OPJ_UINT32 extra = 2U;
 
-    *nmsedec = 0;
+    if (nmsedec) {
+        *nmsedec = 0;
+    }
 #ifdef DEBUG_ENC_CLN
     printf("enc_clnpass: bpno=%d\n", bpno);
 #endif
@@ -2196,6 +2212,7 @@ typedef struct {
     opj_tccp_t* tccp;
     const OPJ_FLOAT64 * mct_norms;
     OPJ_UINT32 mct_numcomps;
+    OPJ_BOOL compute_distortion;
     volatile OPJ_BOOL* pret;
     opj_mutex_t* mutex;
 } opj_t1_cblk_encode_processing_job_t;
@@ -2435,21 +2452,50 @@ static void opj_t1_cblk_encode_processor(void* user_data, opj_tls_t* tls)
                 tccp->qmfbid,
                 band->stepsize,
                 tccp->cblksty,
+                job->compute_distortion,
                 job->tile->numcomps,
                 job->mct_norms,
                 job->mct_numcomps);
-        if (job->mutex) {
-            opj_mutex_lock(job->mutex);
-        }
-        job->tile->distotile += cumwmsedec;
-        if (job->mutex) {
-            opj_mutex_unlock(job->mutex);
+        if (job->compute_distortion) {
+            if (job->mutex) {
+                opj_mutex_lock(job->mutex);
+            }
+            job->tile->distotile += cumwmsedec;
+            if (job->mutex) {
+                opj_mutex_unlock(job->mutex);
+            }
         }
     }
 
     opj_free(job);
 }
 
+
+/**
+ * Whether rate allocation will read the per-pass distortion estimates.
+ * They are only used to search for a truncation point meeting a rate or
+ * distortion target (opj_tcd_rateallocate). Layers without a target take
+ * every pass, and fixed-layer allocation does not use them at all; the
+ * codestream info structure that could also report them is never passed on
+ * the encoding side.
+ */
+static OPJ_BOOL opj_t1_encoder_needs_distortion(const opj_cp_t *cp,
+        const opj_tcp_t *tcp)
+{
+    OPJ_UINT32 layno;
+    const J2K_QUALITY_LAYER_ALLOCATION_STRATEGY strategy =
+        cp->m_specific_param.m_enc.m_quality_layer_alloc_strategy;
+
+    for (layno = 0; layno < tcp->numlayers; layno++) {
+        if (strategy == RATE_DISTORTION_RATIO && tcp->rates[layno] > 0.0f) {
+            return OPJ_TRUE;
+        }
+        if (strategy == FIXED_DISTORTION_RATIO && tcp->distoratio[layno] > 0.0f) {
+            return OPJ_TRUE;
+        }
+    }
+    return OPJ_FALSE;
+}
 
 OPJ_BOOL opj_t1_encode_cblks(opj_tcd_t* tcd,
                              opj_tcd_tile_t *tile,
@@ -2462,6 +2508,8 @@ OPJ_BOOL opj_t1_encode_cblks(opj_tcd_t* tcd,
     opj_thread_pool_t* tp = tcd->thread_pool;
     OPJ_UINT32 compno, resno, bandno, precno, cblkno;
     opj_mutex_t* mutex = opj_mutex_create();
+    const OPJ_BOOL compute_distortion = opj_t1_encoder_needs_distortion(tcd->cp,
+                                        tcp);
 
     tile->distotile = 0;
 
@@ -2501,6 +2549,7 @@ OPJ_BOOL opj_t1_encode_cblks(opj_tcd_t* tcd,
                         job->tccp = tccp;
                         job->mct_norms = mct_norms;
                         job->mct_numcomps = mct_numcomps;
+                        job->compute_distortion = compute_distortion;
                         job->pret = &ret;
                         job->mutex = mutex;
                         opj_thread_pool_submit_job(tp, opj_t1_cblk_encode_processor, job);
@@ -2559,6 +2608,7 @@ static OPJ_FLOAT64 opj_t1_encode_cblk(opj_t1_t *t1,
                                       OPJ_UINT32 qmfbid,
                                       OPJ_FLOAT64 stepsize,
                                       OPJ_UINT32 cblksty,
+                                      OPJ_BOOL compute_distortion,
                                       OPJ_UINT32 numcomps,
                                       const OPJ_FLOAT64 * mct_norms,
                                       OPJ_UINT32 mct_numcomps)
@@ -2571,6 +2621,8 @@ static OPJ_FLOAT64 opj_t1_encode_cblk(opj_t1_t *t1,
     OPJ_INT32 bpno;
     OPJ_UINT32 passtype;
     OPJ_INT32 nmsedec = 0;
+    /* NULL makes the passes skip the per-sample distortion estimate */
+    OPJ_INT32* const p_nmsedec = compute_distortion ? &nmsedec : NULL;
     OPJ_INT32 max;
     OPJ_UINT32 i, j;
     OPJ_BYTE type = T1_TYPE_MQ;
@@ -2640,13 +2692,13 @@ static OPJ_FLOAT64 opj_t1_encode_cblk(opj_t1_t *t1,
 
         switch (passtype) {
         case 0:
-            opj_t1_enc_sigpass(t1, bpno, &nmsedec, type, cblksty);
+            opj_t1_enc_sigpass(t1, bpno, p_nmsedec, type, cblksty);
             break;
         case 1:
-            opj_t1_enc_refpass(t1, bpno, &nmsedec, type);
+            opj_t1_enc_refpass(t1, bpno, p_nmsedec, type);
             break;
         case 2:
-            opj_t1_enc_clnpass(t1, bpno, &nmsedec, cblksty);
+            opj_t1_enc_clnpass(t1, bpno, p_nmsedec, cblksty);
             /* code switch SEGMARK (i.e. SEGSYM) */
             if (cblksty & J2K_CCP_CBLKSTY_SEGSYM) {
                 opj_mqc_segmark_enc(mqc);
@@ -2654,9 +2706,11 @@ static OPJ_FLOAT64 opj_t1_encode_cblk(opj_t1_t *t1,
             break;
         }
 
-        tempwmsedec = opj_t1_getwmsedec(nmsedec, compno, level, orient, bpno, qmfbid,
-                                        stepsize, numcomps, mct_norms, mct_numcomps) ;
-        cumwmsedec += tempwmsedec;
+        if (compute_distortion) {
+            tempwmsedec = opj_t1_getwmsedec(nmsedec, compno, level, orient, bpno, qmfbid,
+                                            stepsize, numcomps, mct_norms, mct_numcomps) ;
+            cumwmsedec += tempwmsedec;
+        }
         pass->distortiondec = cumwmsedec;
 
         if (opj_t1_enc_is_term_pass(cblk, cblksty, bpno, passtype)) {
