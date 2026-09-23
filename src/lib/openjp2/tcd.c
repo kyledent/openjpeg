@@ -2262,6 +2262,76 @@ static OPJ_BOOL opj_tcd_mct_decode(opj_tcd_t *p_tcd, opj_event_mgr_t *p_manager)
 }
 
 
+/* DC level shift and clamp of l_height rows of l_width samples (rows l_stride
+ * samples apart after the l_width), for the reversible (qmfbid 1) or
+ * irreversible path. */
+static void opj_tcd_dc_level_shift_decode_rows(OPJ_INT32 * l_current_ptr,
+        OPJ_UINT32 l_width,
+        OPJ_UINT32 l_height,
+        OPJ_UINT32 l_stride,
+        OPJ_UINT32 qmfbid,
+        OPJ_INT32 dc_level_shift,
+        OPJ_INT32 l_min,
+        OPJ_INT32 l_max)
+{
+    OPJ_UINT32 i, j;
+    if (qmfbid == 1) {
+        for (j = 0; j < l_height; ++j) {
+            for (i = 0; i < l_width; ++i) {
+                /* TODO: do addition on int64 ? */
+                *l_current_ptr = opj_int_clamp(*l_current_ptr + dc_level_shift, l_min,
+                                               l_max);
+                ++l_current_ptr;
+            }
+            l_current_ptr += l_stride;
+        }
+    } else {
+        for (j = 0; j < l_height; ++j) {
+            for (i = 0; i < l_width; ++i) {
+                OPJ_FLOAT32 l_value = *((OPJ_FLOAT32 *) l_current_ptr);
+                if (l_value > (OPJ_FLOAT32)INT_MAX) {
+                    *l_current_ptr = l_max;
+                } else if (l_value < INT_MIN) {
+                    *l_current_ptr = l_min;
+                } else {
+                    /* Do addition on int64 to avoid overflows */
+                    OPJ_INT64 l_value_int = (OPJ_INT64)opj_lrintf(l_value);
+                    *l_current_ptr = (OPJ_INT32)opj_int64_clamp(
+                                         l_value_int + dc_level_shift, l_min, l_max);
+                }
+                ++l_current_ptr;
+            }
+            l_current_ptr += l_stride;
+        }
+    }
+}
+
+typedef struct {
+    OPJ_INT32 * ptr;
+    OPJ_UINT32 width;
+    OPJ_UINT32 height;
+    OPJ_UINT32 stride;
+    OPJ_UINT32 qmfbid;
+    OPJ_INT32 dc_level_shift;
+    OPJ_INT32 min;
+    OPJ_INT32 max;
+} opj_tcd_dc_level_shift_job_t;
+
+static void opj_tcd_dc_level_shift_decode_job(void* user_data, opj_tls_t* tls)
+{
+    opj_tcd_dc_level_shift_job_t* job = (opj_tcd_dc_level_shift_job_t*)user_data;
+    (void)tls;
+    opj_tcd_dc_level_shift_decode_rows(job->ptr, job->width, job->height,
+                                       job->stride, job->qmfbid,
+                                       job->dc_level_shift, job->min, job->max);
+    opj_free(job);
+}
+
+/* Minimum number of samples per parallel job of the DC level shift: the pass
+ * costs about a nanosecond per sample, so smaller jobs are not worth the
+ * submission and wake-up. */
+#define OPJ_TCD_DC_SHIFT_MIN_SAMPLES_PER_JOB 65536U
+
 static OPJ_BOOL opj_tcd_dc_level_shift_decode(opj_tcd_t *p_tcd)
 {
     OPJ_UINT32 compno;
@@ -2270,10 +2340,12 @@ static OPJ_BOOL opj_tcd_dc_level_shift_decode(opj_tcd_t *p_tcd)
     opj_image_comp_t * l_img_comp = 00;
     opj_tcd_resolution_t* l_res = 00;
     opj_tcd_tile_t * l_tile;
-    OPJ_UINT32 l_width, l_height, i, j;
+    OPJ_UINT32 l_width, l_height;
     OPJ_INT32 * l_current_ptr;
     OPJ_INT32 l_min, l_max;
     OPJ_UINT32 l_stride;
+    const int num_threads = opj_thread_pool_get_thread_count(p_tcd->thread_pool);
+    OPJ_BOOL submitted = OPJ_FALSE;
 
     l_tile = p_tcd->tcd_image->tiles;
     l_tile_comp = l_tile->comps;
@@ -2282,6 +2354,7 @@ static OPJ_BOOL opj_tcd_dc_level_shift_decode(opj_tcd_t *p_tcd)
 
     for (compno = 0; compno < l_tile->numcomps;
             compno++, ++l_img_comp, ++l_tccp, ++l_tile_comp) {
+        OPJ_UINT32 num_jobs = 1, j, rows_per_job;
 
         if (p_tcd->used_component != NULL && !p_tcd->used_component[compno]) {
             continue;
@@ -2319,35 +2392,58 @@ static OPJ_BOOL opj_tcd_dc_level_shift_decode(opj_tcd_t *p_tcd)
             continue;
         }
 
-        if (l_tccp->qmfbid == 1) {
-            for (j = 0; j < l_height; ++j) {
-                for (i = 0; i < l_width; ++i) {
-                    /* TODO: do addition on int64 ? */
-                    *l_current_ptr = opj_int_clamp(*l_current_ptr + l_tccp->m_dc_level_shift, l_min,
-                                                   l_max);
-                    ++l_current_ptr;
-                }
-                l_current_ptr += l_stride;
+        /* Rows are independent: split them across the thread pool when
+         * there is enough work. */
+        if (num_threads > 1) {
+            OPJ_UINT64 by_work = ((OPJ_UINT64)l_width * l_height) /
+                                 OPJ_TCD_DC_SHIFT_MIN_SAMPLES_PER_JOB;
+            num_jobs = (OPJ_UINT32)num_threads;
+            if (by_work < num_jobs) {
+                num_jobs = (OPJ_UINT32)by_work;
             }
-        } else {
-            for (j = 0; j < l_height; ++j) {
-                for (i = 0; i < l_width; ++i) {
-                    OPJ_FLOAT32 l_value = *((OPJ_FLOAT32 *) l_current_ptr);
-                    if (l_value > (OPJ_FLOAT32)INT_MAX) {
-                        *l_current_ptr = l_max;
-                    } else if (l_value < INT_MIN) {
-                        *l_current_ptr = l_min;
-                    } else {
-                        /* Do addition on int64 to avoid overflows */
-                        OPJ_INT64 l_value_int = (OPJ_INT64)opj_lrintf(l_value);
-                        *l_current_ptr = (OPJ_INT32)opj_int64_clamp(
-                                             l_value_int + l_tccp->m_dc_level_shift, l_min, l_max);
-                    }
-                    ++l_current_ptr;
-                }
-                l_current_ptr += l_stride;
+            if (l_height < num_jobs) {
+                num_jobs = l_height;
             }
         }
+        if (num_jobs <= 1) {
+            opj_tcd_dc_level_shift_decode_rows(l_current_ptr, l_width, l_height,
+                                               l_stride, l_tccp->qmfbid,
+                                               l_tccp->m_dc_level_shift,
+                                               l_min, l_max);
+            continue;
+        }
+        rows_per_job = l_height / num_jobs;
+        for (j = 0; j < num_jobs; j++) {
+            const OPJ_UINT32 row0 = j * rows_per_job;
+            const OPJ_UINT32 nrows = (j == num_jobs - 1) ? l_height - row0 :
+                                     rows_per_job;
+            OPJ_INT32 * const ptr = l_current_ptr + (OPJ_SIZE_T)row0 *
+                                    (l_width + l_stride);
+            opj_tcd_dc_level_shift_job_t* job = (opj_tcd_dc_level_shift_job_t*)
+                                                opj_malloc(sizeof(opj_tcd_dc_level_shift_job_t));
+            if (!job) {
+                /* do these rows here rather than fail */
+                opj_tcd_dc_level_shift_decode_rows(ptr, l_width, nrows, l_stride,
+                                                   l_tccp->qmfbid,
+                                                   l_tccp->m_dc_level_shift,
+                                                   l_min, l_max);
+                continue;
+            }
+            job->ptr = ptr;
+            job->width = l_width;
+            job->height = nrows;
+            job->stride = l_stride;
+            job->qmfbid = l_tccp->qmfbid;
+            job->dc_level_shift = l_tccp->m_dc_level_shift;
+            job->min = l_min;
+            job->max = l_max;
+            opj_thread_pool_submit_job(p_tcd->thread_pool,
+                                       opj_tcd_dc_level_shift_decode_job, job);
+            submitted = OPJ_TRUE;
+        }
+    }
+    if (submitted) {
+        opj_thread_pool_wait_completion(p_tcd->thread_pool, 0);
     }
 
     return OPJ_TRUE;

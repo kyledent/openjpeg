@@ -2250,7 +2250,7 @@ static void opj_dwt_decode_h_func(void* user_data, opj_tls_t* tls)
         opj_idwt53_h(&job->h, &job->tiledp[j * job->w]);
     }
 
-    opj_aligned_free(job->h.mem);
+    /* job->h.mem belongs to opj_dwt_decode_tile(), which reuses it */
     opj_free(job);
 }
 
@@ -2279,10 +2279,38 @@ static void opj_dwt_decode_v_func(void* user_data, opj_tls_t* tls)
         opj_idwt53_v(&job->v, &job->tiledp[j], (OPJ_SIZE_T)job->w,
                      (OPJ_INT32)(job->max_j - j));
 
-    opj_aligned_free(job->v.mem);
+    /* job->v.mem belongs to opj_dwt_decode_tile(), which reuses it */
     opj_free(job);
 }
 
+
+/* Minimum number of samples a parallel job of the inverse 5/3 transform
+ * should process: below that, job submission and wake-up cost more than
+ * the work (the coarse resolution levels are small). */
+#define OPJ_DWT_MIN_SAMPLES_PER_JOB 16384U
+
+/* Number of jobs to split n_units (rows or columns) of units_len samples
+ * each into, given the thread count: at most one per thread, and at most
+ * one per OPJ_DWT_MIN_SAMPLES_PER_JOB samples. 1 means run serially. */
+static OPJ_UINT32 opj_dwt_decode_num_jobs(int num_threads,
+        OPJ_UINT32 n_units,
+        OPJ_UINT32 units_len)
+{
+    OPJ_UINT64 by_work;
+    OPJ_UINT32 num_jobs;
+    if (num_threads <= 1 || n_units <= 1) {
+        return 1;
+    }
+    by_work = ((OPJ_UINT64)n_units * units_len) / OPJ_DWT_MIN_SAMPLES_PER_JOB;
+    num_jobs = (OPJ_UINT32)num_threads;
+    if (by_work < num_jobs) {
+        num_jobs = (OPJ_UINT32)by_work;
+    }
+    if (n_units < num_jobs) {
+        num_jobs = n_units;
+    }
+    return num_jobs < 1 ? 1 : num_jobs;
+}
 
 /* <summary>                            */
 /* Inverse wavelet transform in 2-D.    */
@@ -2305,6 +2333,13 @@ static OPJ_BOOL opj_dwt_decode_tile(opj_thread_pool_t* tp,
                                 tilec->resolutions[tilec->minimum_num_resolutions - 1].x0);
     OPJ_SIZE_T h_mem_size;
     int num_threads;
+    /* One scratch buffer per parallel job, allocated once for all the
+     * resolution levels: the jobs of a level all complete before the next
+     * level starts, so the buffers can be reused. */
+    OPJ_INT32** job_mem = NULL;
+    OPJ_UINT32 num_job_mem = 0;
+    OPJ_UINT32 k;
+    OPJ_BOOL ret = OPJ_TRUE;
 
     /* Not entirely sure for the return code of w == 0 which is triggered per */
     /* https://github.com/uclouvain/openjpeg/issues/1505 */
@@ -2330,9 +2365,19 @@ static OPJ_BOOL opj_dwt_decode_tile(opj_thread_pool_t* tp,
 
     v.mem = h.mem;
 
+    if (num_threads > 1) {
+        job_mem = (OPJ_INT32**)opj_calloc((OPJ_SIZE_T)num_threads,
+                                          sizeof(OPJ_INT32*));
+        if (!job_mem) {
+            opj_aligned_free(h.mem);
+            return OPJ_FALSE;
+        }
+    }
+
     while (--numres) {
         OPJ_INT32 * OPJ_RESTRICT tiledp = tilec->data;
         OPJ_UINT32 j;
+        OPJ_UINT32 num_jobs;
 
         ++tr;
         h.sn = (OPJ_INT32)rw;
@@ -2344,18 +2389,21 @@ static OPJ_BOOL opj_dwt_decode_tile(opj_thread_pool_t* tp,
         h.dn = (OPJ_INT32)(rw - (OPJ_UINT32)h.sn);
         h.cas = tr->x0 % 2;
 
-        if (num_threads <= 1 || rh <= 1) {
+        num_jobs = opj_dwt_decode_num_jobs(num_threads, rh, rw);
+        /* Make sure there is a scratch buffer for every job */
+        for (; num_job_mem < num_jobs && job_mem; num_job_mem++) {
+            job_mem[num_job_mem] = (OPJ_INT32*)opj_aligned_32_malloc(h_mem_size);
+            if (!job_mem[num_job_mem]) {
+                ret = OPJ_FALSE;
+                goto cleanup;
+            }
+        }
+        if (num_jobs <= 1) {
             for (j = 0; j < rh; ++j) {
                 opj_idwt53_h(&h, &tiledp[(OPJ_SIZE_T)j * w]);
             }
         } else {
-            OPJ_UINT32 num_jobs = (OPJ_UINT32)num_threads;
-            OPJ_UINT32 step_j;
-
-            if (rh < num_jobs) {
-                num_jobs = rh;
-            }
-            step_j = (rh / num_jobs);
+            const OPJ_UINT32 step_j = (rh / num_jobs);
 
             for (j = 0; j < num_jobs; j++) {
                 opj_dwt_decode_h_job_t* job;
@@ -2367,8 +2415,8 @@ static OPJ_BOOL opj_dwt_decode_tile(opj_thread_pool_t* tp,
                     /* tiledp, so it is not practical to recover from that error */
                     /* FIXME event manager error callback */
                     opj_thread_pool_wait_completion(tp, 0);
-                    opj_aligned_free(h.mem);
-                    return OPJ_FALSE;
+                    ret = OPJ_FALSE;
+                    goto cleanup;
                 }
                 job->h = h;
                 job->rw = rw;
@@ -2379,14 +2427,7 @@ static OPJ_BOOL opj_dwt_decode_tile(opj_thread_pool_t* tp,
                 if (j == (num_jobs - 1U)) {  /* this will take care of the overflow */
                     job->max_j = rh;
                 }
-                job->h.mem = (OPJ_INT32*)opj_aligned_32_malloc(h_mem_size);
-                if (!job->h.mem) {
-                    /* FIXME event manager error callback */
-                    opj_thread_pool_wait_completion(tp, 0);
-                    opj_free(job);
-                    opj_aligned_free(h.mem);
-                    return OPJ_FALSE;
-                }
+                job->h.mem = job_mem[j];
                 opj_thread_pool_submit_job(tp, opj_dwt_decode_h_func, job);
             }
             opj_thread_pool_wait_completion(tp, 0);
@@ -2395,7 +2436,19 @@ static OPJ_BOOL opj_dwt_decode_tile(opj_thread_pool_t* tp,
         v.dn = (OPJ_INT32)(rh - (OPJ_UINT32)v.sn);
         v.cas = tr->y0 % 2;
 
-        if (num_threads <= 1 || rw <= 1) {
+        /* Split the columns in multiples of PARALLEL_COLS_53, so that no
+         * job is left with a remainder handled by the one-column path. */
+        num_jobs = opj_dwt_decode_num_jobs(num_threads,
+                                           (rw + PARALLEL_COLS_53 - 1) / PARALLEL_COLS_53,
+                                           rh * PARALLEL_COLS_53);
+        for (; num_job_mem < num_jobs && job_mem; num_job_mem++) {
+            job_mem[num_job_mem] = (OPJ_INT32*)opj_aligned_32_malloc(h_mem_size);
+            if (!job_mem[num_job_mem]) {
+                ret = OPJ_FALSE;
+                goto cleanup;
+            }
+        }
+        if (num_jobs <= 1) {
             for (j = 0; j + PARALLEL_COLS_53 <= rw;
                     j += PARALLEL_COLS_53) {
                 opj_idwt53_v(&v, &tiledp[j], (OPJ_SIZE_T)w, PARALLEL_COLS_53);
@@ -2404,13 +2457,8 @@ static OPJ_BOOL opj_dwt_decode_tile(opj_thread_pool_t* tp,
                 opj_idwt53_v(&v, &tiledp[j], (OPJ_SIZE_T)w, (OPJ_INT32)(rw - j));
             }
         } else {
-            OPJ_UINT32 num_jobs = (OPJ_UINT32)num_threads;
-            OPJ_UINT32 step_j;
-
-            if (rw < num_jobs) {
-                num_jobs = rw;
-            }
-            step_j = (rw / num_jobs);
+            const OPJ_UINT32 num_blocks = (rw + PARALLEL_COLS_53 - 1) / PARALLEL_COLS_53;
+            const OPJ_UINT32 step_j = (num_blocks / num_jobs) * PARALLEL_COLS_53;
 
             for (j = 0; j < num_jobs; j++) {
                 opj_dwt_decode_v_job_t* job;
@@ -2422,8 +2470,8 @@ static OPJ_BOOL opj_dwt_decode_tile(opj_thread_pool_t* tp,
                     /* tiledp, so it is not practical to recover from that error */
                     /* FIXME event manager error callback */
                     opj_thread_pool_wait_completion(tp, 0);
-                    opj_aligned_free(v.mem);
-                    return OPJ_FALSE;
+                    ret = OPJ_FALSE;
+                    goto cleanup;
                 }
                 job->v = v;
                 job->rh = rh;
@@ -2434,21 +2482,20 @@ static OPJ_BOOL opj_dwt_decode_tile(opj_thread_pool_t* tp,
                 if (j == (num_jobs - 1U)) {  /* this will take care of the overflow */
                     job->max_j = rw;
                 }
-                job->v.mem = (OPJ_INT32*)opj_aligned_32_malloc(h_mem_size);
-                if (!job->v.mem) {
-                    /* FIXME event manager error callback */
-                    opj_thread_pool_wait_completion(tp, 0);
-                    opj_free(job);
-                    opj_aligned_free(v.mem);
-                    return OPJ_FALSE;
-                }
+                job->v.mem = job_mem[j];
                 opj_thread_pool_submit_job(tp, opj_dwt_decode_v_func, job);
             }
             opj_thread_pool_wait_completion(tp, 0);
         }
     }
+
+cleanup:
+    for (k = 0; k < num_job_mem; k++) {
+        opj_aligned_free(job_mem[k]);
+    }
+    opj_free(job_mem);
     opj_aligned_free(h.mem);
-    return OPJ_TRUE;
+    return ret;
 }
 
 static void opj_dwt_interleave_partial_h(OPJ_INT32 *dest,
