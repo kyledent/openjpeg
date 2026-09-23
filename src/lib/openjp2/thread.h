@@ -207,6 +207,33 @@ typedef struct opj_thread_pool_t opj_thread_pool_t;
  */
 opj_thread_pool_t* opj_thread_pool_create(int num_threads);
 
+/** Obtain a thread pool of num_threads workers for an encoder (for_encoder
+ * true) or a decoder: a pool released by an earlier codec of the same kind
+ * and size is reused when one is kept, otherwise a new pool is created as by
+ * opj_thread_pool_create(). A codec handles one image, so without reuse every
+ * image would start and join its worker threads.
+ *
+ * Pools are kept separately for encoders and decoders because worker thread
+ * local storage caches per-direction Tier-1 state.
+ *
+ * Reuse is only available with POSIX threads, and can be disabled by setting
+ * the environment variable OPJ_THREAD_POOL_CACHE=0.
+ *
+ * @param num_threads   the number of worker threads wanted.
+ * @param for_encoder   whether the pool will run encoding jobs.
+ * @return a thread pool handle to give back with opj_thread_pool_release().
+ */
+opj_thread_pool_t* opj_thread_pool_acquire(int num_threads,
+        OPJ_BOOL for_encoder);
+
+/** Give back a pool obtained with opj_thread_pool_acquire(). It is kept for
+ * reuse when it has worker threads and there is room, and destroyed otherwise.
+ * The pool must not be used by the caller afterwards.
+ *
+ * @param tp the thread pool (may be NULL).
+ */
+void opj_thread_pool_release(opj_thread_pool_t* tp);
+
 /** User function to execute in a thread
  * @param user_data user data provided with opj_thread_create()
  * @param tls handle to thread local storage

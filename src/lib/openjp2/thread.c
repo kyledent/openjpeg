@@ -614,6 +614,7 @@ struct opj_thread_pool_t {
     int                              waiting_worker_thread_count;
     opj_tls_t*                       tls;
     int                              signaling_threshold;
+    OPJ_BOOL                         for_encoder; /* set by opj_thread_pool_acquire() */
 };
 
 static OPJ_BOOL opj_thread_pool_setup(opj_thread_pool_t* tp, int num_threads);
@@ -956,4 +957,126 @@ void opj_thread_pool_destroy(opj_thread_pool_t* tp)
     opj_mutex_destroy(tp->mutex);
     opj_tls_destroy(tp->tls);
     opj_free(tp);
+}
+
+
+/* ----------------------------------------------------------------------- */
+/* Reuse of thread pools across codecs (opj_thread_pool_acquire/release)    */
+/* ----------------------------------------------------------------------- */
+
+/* Needs POSIX threads (pthread_atfork) and a way to join the idle workers when
+ * the library is unloaded (a destructor function); elsewhere acquire/release
+ * are plain create/destroy. */
+#if MUTEX_pthread && (defined(__GNUC__) || defined(__clang__))
+#define OPJ_POOL_CACHE_AVAILABLE 1
+
+/* Number of idle pools kept. Each holds its worker threads, blocked on a
+ * condition variable, and their Tier-1 buffers. */
+#define OPJ_THREAD_POOL_CACHE_SIZE 4
+
+static pthread_mutex_t opj_pool_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_once_t opj_pool_cache_once = PTHREAD_ONCE_INIT;
+static opj_thread_pool_t* opj_pool_cache[OPJ_THREAD_POOL_CACHE_SIZE];
+static int opj_pool_cache_enabled = 1;
+
+static void opj_pool_cache_prepare_fork(void)
+{
+    pthread_mutex_lock(&opj_pool_cache_mutex);
+}
+
+static void opj_pool_cache_parent_fork(void)
+{
+    pthread_mutex_unlock(&opj_pool_cache_mutex);
+}
+
+static void opj_pool_cache_child_fork(void)
+{
+    /* Only the forking thread exists in the child: the worker threads of the
+     * cached pools are gone, so the pools must not be handed out. Forget them
+     * (their memory is leaked, which is harmless) rather than destroy them,
+     * which would try to join threads that do not exist. */
+    memset(opj_pool_cache, 0, sizeof(opj_pool_cache));
+    pthread_mutex_unlock(&opj_pool_cache_mutex);
+}
+
+static void opj_pool_cache_init(void)
+{
+    const char* env = getenv("OPJ_THREAD_POOL_CACHE");
+    if (env != NULL && strcmp(env, "0") == 0) {
+        opj_pool_cache_enabled = 0;
+    }
+    if (pthread_atfork(opj_pool_cache_prepare_fork, opj_pool_cache_parent_fork,
+                       opj_pool_cache_child_fork) != 0) {
+        opj_pool_cache_enabled = 0;
+    }
+}
+
+/* Join the idle worker threads when the library is unloaded (dlclose) or the
+ * process exits normally: threads left running in unmapped code would crash. */
+__attribute__((destructor)) static void opj_pool_cache_shutdown(void)
+{
+    int i;
+    pthread_mutex_lock(&opj_pool_cache_mutex);
+    for (i = 0; i < OPJ_THREAD_POOL_CACHE_SIZE; i++) {
+        opj_thread_pool_t* tp = opj_pool_cache[i];
+        opj_pool_cache[i] = NULL;
+        opj_thread_pool_destroy(tp);
+    }
+    pthread_mutex_unlock(&opj_pool_cache_mutex);
+}
+
+#endif /* OPJ_POOL_CACHE_AVAILABLE */
+
+opj_thread_pool_t* opj_thread_pool_acquire(int num_threads,
+        OPJ_BOOL for_encoder)
+{
+    opj_thread_pool_t* tp;
+#ifdef OPJ_POOL_CACHE_AVAILABLE
+    if (num_threads > 1) {
+        int i;
+        pthread_once(&opj_pool_cache_once, opj_pool_cache_init);
+        if (opj_pool_cache_enabled) {
+            pthread_mutex_lock(&opj_pool_cache_mutex);
+            for (i = 0; i < OPJ_THREAD_POOL_CACHE_SIZE; i++) {
+                tp = opj_pool_cache[i];
+                if (tp != NULL && tp->worker_threads_count == num_threads &&
+                        tp->for_encoder == for_encoder) {
+                    opj_pool_cache[i] = NULL;
+                    pthread_mutex_unlock(&opj_pool_cache_mutex);
+                    return tp;
+                }
+            }
+            pthread_mutex_unlock(&opj_pool_cache_mutex);
+        }
+    }
+#endif
+    tp = opj_thread_pool_create(num_threads);
+    if (tp != NULL) {
+        tp->for_encoder = for_encoder;
+    }
+    return tp;
+}
+
+void opj_thread_pool_release(opj_thread_pool_t* tp)
+{
+#ifdef OPJ_POOL_CACHE_AVAILABLE
+    /* Keep only real pools (with worker threads) in a sane state */
+    if (tp != NULL && tp->cond != NULL && opj_pool_cache_enabled) {
+        int i;
+        /* Jobs are always waited for by the codec; make sure regardless */
+        opj_thread_pool_wait_completion(tp, 0);
+        if (tp->state == OPJWTS_OK) {
+            pthread_mutex_lock(&opj_pool_cache_mutex);
+            for (i = 0; i < OPJ_THREAD_POOL_CACHE_SIZE; i++) {
+                if (opj_pool_cache[i] == NULL) {
+                    opj_pool_cache[i] = tp;
+                    pthread_mutex_unlock(&opj_pool_cache_mutex);
+                    return;
+                }
+            }
+            pthread_mutex_unlock(&opj_pool_cache_mutex);
+        }
+    }
+#endif
+    opj_thread_pool_destroy(tp);
 }

@@ -70,6 +70,15 @@ foreach(mode 1 5 9 17)
   add_test(NAME roundtrip_bypass_${mode}_tall COMMAND test_encode_roundtrip -mode ${mode} -w 1030 -h 517 -prec 14)
 endforeach()
 add_test(NAME roundtrip_jp2 COMMAND test_encode_roundtrip -jp2)
+# Thread pools reused across codecs: alternating directions, mixed sizes,
+# no accumulation of threads, and fork() safety (POSIX only).
+if(UNIX)
+  add_executable(test_thread_pool_reuse test_thread_pool_reuse.c)
+  target_link_libraries(test_thread_pool_reuse ${OPENJPEG_LIBRARY_NAME})
+  add_test(NAME thread_pool_reuse COMMAND test_thread_pool_reuse)
+  add_test(NAME thread_pool_reuse_disabled COMMAND test_thread_pool_reuse)
+  set_tests_properties(thread_pool_reuse_disabled PROPERTIES ENVIRONMENT "OPJ_THREAD_POOL_CACHE=0")
+endif()
 # Code-block style bits the encoder does not implement must be refused, not
 # written into COD over MQ-coded code-blocks.
 foreach(mode 0x40 0x80 0x100)
