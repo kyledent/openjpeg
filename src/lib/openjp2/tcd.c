@@ -2485,9 +2485,12 @@ static OPJ_BOOL opj_tcd_dc_level_shift_encode(opj_tcd_t *p_tcd)
                     (OPJ_SIZE_T)(l_tile_comp->y1 - l_tile_comp->y0);
 
         if (l_tccp->qmfbid == 1) {
-            for (i = 0; i < l_nb_elem; ++i) {
-                *l_current_ptr -= l_tccp->m_dc_level_shift ;
-                ++l_current_ptr;
+            /* The shift is 0 for signed components: nothing to do then. */
+            if (l_tccp->m_dc_level_shift != 0) {
+                for (i = 0; i < l_nb_elem; ++i) {
+                    *l_current_ptr -= l_tccp->m_dc_level_shift ;
+                    ++l_current_ptr;
+                }
             }
         } else {
             for (i = 0; i < l_nb_elem; ++i) {

@@ -1462,7 +1462,6 @@ static OPJ_BOOL opj_t1_allocate_buffers(
     assert(h <= 1024);
     assert(w * h <= 4096);
 
-    /* encoder uses tile buffer, so no need to allocate */
     {
         OPJ_UINT32 datasize = w * h;
 
@@ -1475,8 +1474,11 @@ static OPJ_BOOL opj_t1_allocate_buffers(
             }
             t1->datasize = datasize;
         }
+        /* The decoder only writes the samples that become significant, so it
+         * needs a zeroed buffer. The encoder overwrites all w*h entries when
+         * it copies the code-block in (opj_t1_cblk_encode_processor). */
         /* memset first arg is declared to never be null by gcc */
-        if (t1->data != NULL) {
+        if (!t1->encoder && t1->data != NULL) {
             memset(t1->data, 0, datasize * sizeof(OPJ_INT32));
         }
     }
