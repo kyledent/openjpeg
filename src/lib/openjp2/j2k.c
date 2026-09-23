@@ -7733,6 +7733,18 @@ OPJ_BOOL opj_j2k_setup_encoder(opj_j2k_t *p_j2k,
         return OPJ_FALSE;
     }
 
+    /* The code-block style byte is written to COD as given. Only the six
+     * Part-1 mode switches are implemented by the Tier-1 encoder: accepting
+     * any other bit (e.g. the HT bits 0x40 / 0x80) would label MQ-coded
+     * code-blocks with a style no decoder can read them as. */
+    if ((parameters->mode & ~0x3F) != 0) {
+        opj_event_msg(p_manager, EVT_ERROR,
+                      "Unsupported code-block style (mode) bits 0x%x: only 0x01-0x20 "
+                      "(BYPASS, RESET, TERMALL, VSC, PTERM, SEGSYM) are supported\n",
+                      (unsigned)(parameters->mode & ~0x3F));
+        return OPJ_FALSE;
+    }
+
     if (parameters->cp_fixed_alloc) {
         if (parameters->cp_matrice == NULL) {
             opj_event_msg(p_manager, EVT_ERROR,

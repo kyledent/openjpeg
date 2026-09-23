@@ -51,6 +51,25 @@ target_link_libraries(test_tile_encoder ${OPENJPEG_LIBRARY_NAME})
 add_executable(test_decode_area test_decode_area.c)
 target_link_libraries(test_decode_area ${OPENJPEG_LIBRARY_NAME})
 
+# In-memory lossless round trips: every code-block style switch, signed and
+# unsigned samples, and the inline (0) and one-worker (1) thread paths.
+add_executable(test_encode_roundtrip test_encode_roundtrip.c)
+target_link_libraries(test_encode_roundtrip ${OPENJPEG_LIBRARY_NAME})
+foreach(mode 0 1 2 4 5 8 9 16 32 63)
+  add_test(NAME roundtrip_mode_${mode} COMMAND test_encode_roundtrip -mode ${mode})
+  add_test(NAME roundtrip_mode_${mode}_s16 COMMAND test_encode_roundtrip -mode ${mode} -prec 16 -sgnd 1)
+endforeach()
+foreach(t 0 1 2 4)
+  add_test(NAME roundtrip_threads_${t} COMMAND test_encode_roundtrip -threads ${t} -dec-threads ${t} -w 1030 -h 517)
+endforeach()
+add_test(NAME roundtrip_u8_small COMMAND test_encode_roundtrip -prec 8 -w 17 -h 5 -res 2)
+add_test(NAME roundtrip_jp2 COMMAND test_encode_roundtrip -jp2)
+# Code-block style bits the encoder does not implement must be refused, not
+# written into COD over MQ-coded code-blocks.
+foreach(mode 0x40 0x80 0x100)
+  add_test(NAME reject_mode_${mode} COMMAND test_encode_roundtrip -mode ${mode} -expect-reject)
+endforeach()
+
 # Let's try a couple of possibilities:
 add_test(NAME tte0 COMMAND test_tile_encoder)
 add_test(NAME tte1 COMMAND test_tile_encoder 3 2048 2048 1024 1024 8 1 tte1.j2k)
