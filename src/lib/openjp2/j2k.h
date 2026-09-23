@@ -67,6 +67,9 @@ The functions in J2K.C have for goal to read/write the several parts of the code
 #define J2K_CCP_QNTSTY_SIQNT 1
 #define J2K_CCP_QNTSTY_SEQNT 2
 
+#define J2K_RSIZ_HT 0x4000   /**< Rsiz bit 14: the codestream uses HT (15444-15) code-blocks */
+#define J2K_PCAP_HT 0x00020000U /**< Pcap bit for 15444-15, which is followed by a Ccap^15 word */
+
 /* ----------------------------------------------------------------------- */
 
 #define J2K_MS_SOC 0xff4f   /**< SOC marker value */

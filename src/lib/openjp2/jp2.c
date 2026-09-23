@@ -1938,7 +1938,10 @@ OPJ_BOOL opj_jp2_setup_encoder(opj_jp2_t *jp2,
 
     /* Profile box */
 
-    jp2->brand = JP2_JP2;   /* BR */
+    /* A codestream with HT code-blocks (15444-15) cannot be read by a
+     * 15444-1 decoder: its file is a JPH file, not a JP2 file */
+    jp2->brand = (parameters->mode & J2K_CCP_CBLKSTY_HT) ? JP2_JPH :
+                 JP2_JP2;   /* BR */
     jp2->minversion = 0;    /* MinV */
     jp2->numcl = 1;
     jp2->cl = (OPJ_UINT32*) opj_malloc(jp2->numcl * sizeof(OPJ_UINT32));
@@ -1947,7 +1950,7 @@ OPJ_BOOL opj_jp2_setup_encoder(opj_jp2_t *jp2,
                       "Not enough memory when setup the JP2 encoder\n");
         return OPJ_FALSE;
     }
-    jp2->cl[0] = JP2_JP2;   /* CL0 : JP2 */
+    jp2->cl[0] = jp2->brand;   /* CL0 : JP2 or JPH */
 
     /* Image Header box */
 

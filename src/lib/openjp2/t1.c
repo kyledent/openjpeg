@@ -2215,7 +2215,163 @@ typedef struct {
     OPJ_BOOL compute_distortion;
     volatile OPJ_BOOL* pret;
     opj_mutex_t* mutex;
+    opj_event_mgr_t *p_manager;
 } opj_t1_cblk_encode_processing_job_t;
+
+/** Reports an error from a code-block encoding job, serialised with the
+ * other jobs. */
+static void opj_t1_cblk_encode_error(opj_t1_cblk_encode_processing_job_t*
+                                     job, const char *msg, OPJ_UINT32 value)
+{
+    if (job->mutex) {
+        opj_mutex_lock(job->mutex);
+    }
+    opj_event_msg(job->p_manager, EVT_ERROR, msg, value);
+    if (job->mutex) {
+        opj_mutex_unlock(job->mutex);
+    }
+}
+
+/** Encodes a code-block of an HT (J2K_CCP_CBLKSTY_HT) component.
+ *
+ * The samples are quantised exactly as for the MQ coder (whose last coding
+ * pass leaves the same integer magnitudes), stored in t1->data row after row
+ * in sign-magnitude form, and coded by opj_t1_ht_encode_cblk() as a single
+ * cleanup pass. The code-block's distortion decrease, which only feeds the
+ * layer bookkeeping, is returned in *p_disto.
+ *
+ * @param job     the encoding job of the code-block
+ * @param t1      the T1 handle of the calling thread
+ * @param tiledp  the first sample of the code-block in the tile component
+ * @param tile_w  the stride of the tile component
+ * @param p_disto receives the distortion decrease
+ * @return OPJ_FALSE on error, which has been reported
+ */
+static OPJ_BOOL opj_t1_ht_cblk_encode(opj_t1_cblk_encode_processing_job_t*
+                                      job,
+                                      opj_t1_t *t1,
+                                      const OPJ_INT32* tiledp,
+                                      OPJ_UINT32 tile_w,
+                                      OPJ_FLOAT64* p_disto)
+{
+    opj_tcd_cblk_enc_t* cblk = job->cblk;
+    const opj_tcd_band_t* band = job->band;
+    const opj_tccp_t* tccp = job->tccp;
+    const OPJ_UINT32 cblk_w = (OPJ_UINT32)(cblk->x1 - cblk->x0);
+    const OPJ_UINT32 cblk_h = (OPJ_UINT32)(cblk->y1 - cblk->y0);
+    OPJ_UINT32* datap;
+    OPJ_UINT32 i, j, max_mag = 0, num_bits;
+    /* sum over the samples of q^2 - (q - r)^2, q being the sample and r its
+     * reconstruction, in units of the quantisation step */
+    OPJ_FLOAT64 sum = 0;
+    /* only needed when a layer has a rate or distortion target, which HT
+     * code-blocks do not allow; see opj_t1_encoder_needs_distortion() */
+    const OPJ_BOOL compute_distortion = job->compute_distortion;
+
+    *p_disto = 0;
+
+    /* The encoder does not need the flags of the MQ coder, nor a cleared
+     * sample buffer, since every sample is written below */
+    if (cblk_w * cblk_h > t1->datasize) {
+        opj_aligned_free(t1->data);
+        t1->data = (OPJ_INT32*) opj_aligned_malloc(cblk_w * cblk_h *
+                   sizeof(OPJ_INT32));
+        if (!t1->data) {
+            t1->datasize = 0;
+            opj_t1_cblk_encode_error(job, "Not enough memory to encode a "
+                                     "code-block (%u samples)\n",
+                                     cblk_w * cblk_h);
+            return OPJ_FALSE;
+        }
+        t1->datasize = cblk_w * cblk_h;
+    }
+    t1->w = cblk_w;
+    t1->h = cblk_h;
+    datap = (OPJ_UINT32*)t1->data;
+
+    if (tccp->qmfbid == 1) {
+        for (j = 0; j < cblk_h; ++j) {
+            const OPJ_INT32* OPJ_RESTRICT src = tiledp + (OPJ_SIZE_T)j * tile_w;
+            OPJ_UINT32* OPJ_RESTRICT dst = datap + j * cblk_w;
+            for (i = 0; i < cblk_w; ++i) {
+                const OPJ_INT32 v = src[i];
+                /* computed on unsigned, so that INT_MIN gives 2^31 */
+                const OPJ_UINT32 mag = v < 0 ? 0U - (OPJ_UINT32)v : (OPJ_UINT32)v;
+                dst[i] = (v < 0 ? 0x80000000U : 0U) | mag;
+                max_mag |= mag;
+                if (compute_distortion) {
+                    sum += (OPJ_FLOAT64)mag * (OPJ_FLOAT64)mag;
+                }
+            }
+        }
+    } else {
+        const OPJ_FLOAT32* tiledp_f = (const OPJ_FLOAT32*)tiledp;
+        const OPJ_FLOAT64 frac = 1.0 / (1 << T1_NMSEDEC_FRACBITS);
+        for (j = 0; j < cblk_h; ++j) {
+            const OPJ_FLOAT32* OPJ_RESTRICT src = tiledp_f + (OPJ_SIZE_T)j *
+                                                  tile_w;
+            OPJ_UINT32* OPJ_RESTRICT dst = datap + j * cblk_w;
+            for (i = 0; i < cblk_w; ++i) {
+                /* the same fixed-point quantisation as the MQ coder */
+                const OPJ_INT32 q = (OPJ_INT32)opj_lrintf((src[i] / band->stepsize) *
+                                    (1 << T1_NMSEDEC_FRACBITS));
+                const OPJ_UINT32 aq = q < 0 ? 0U - (OPJ_UINT32)q : (OPJ_UINT32)q;
+                const OPJ_UINT32 mag = aq >> T1_NMSEDEC_FRACBITS;
+                const OPJ_FLOAT64 qf = (OPJ_FLOAT64)aq * frac;
+                /* the decoder reconstructs mid-bin */
+                const OPJ_FLOAT64 err = mag ? qf - ((OPJ_FLOAT64)mag + 0.5) : qf;
+                dst[i] = (q < 0 ? 0x80000000U : 0U) | mag;
+                max_mag |= mag;
+                if (compute_distortion) {
+                    sum += qf * qf - err * err;
+                }
+            }
+        }
+    }
+
+    if (max_mag == 0) {
+        /* nothing to code: the code-block is never included */
+        cblk->numbps = 0;
+        cblk->totalpasses = 0;
+        return OPJ_TRUE;
+    }
+
+    /* The cleanup pass codes all Mb magnitude bit-planes of the subband
+     * (Mb - 1 missing MSBs); the 32-bit coder, and decoders, handle at most
+     * 30 of them */
+    num_bits = opj_uint_floorlog2(max_mag) + 1U;
+    if (band->numbps > 30) {
+        opj_t1_cblk_encode_error(job, "HT code-blocks support at most 30 "
+                                 "magnitude bit-planes; a subband has %u\n",
+                                 (OPJ_UINT32)band->numbps);
+        return OPJ_FALSE;
+    }
+    if (band->numbps < 1 || num_bits > (OPJ_UINT32)band->numbps) {
+        opj_t1_cblk_encode_error(job, "A code-block has a coefficient needing "
+                                 "%u magnitude bit-planes, more than its "
+                                 "subband allows (increase the number of "
+                                 "guard bits)\n", num_bits);
+        return OPJ_FALSE;
+    }
+
+    if (!opj_t1_ht_encode_cblk(t1, cblk, max_mag)) {
+        opj_t1_cblk_encode_error(job, "Failed to encode an HT code-block of "
+                                 "%u samples\n", cblk_w * cblk_h);
+        return OPJ_FALSE;
+    }
+
+    if (!compute_distortion) {
+        cblk->passes[0].distortiondec = 0;
+        return OPJ_TRUE;
+    }
+    *p_disto = sum * opj_t1_getwmsedec(8192, job->compno,
+                                       job->tilec->numresolutions - 1 - job->resno,
+                                       band->bandno, 0, tccp->qmfbid,
+                                       band->stepsize, job->tile->numcomps,
+                                       job->mct_norms, job->mct_numcomps);
+    cblk->passes[0].distortiondec = *p_disto;
+    return OPJ_TRUE;
+}
 
 /** Procedure to deal with a asynchronous code-block encoding job.
  *
@@ -2260,6 +2416,25 @@ static void opj_t1_cblk_encode_processor(void* user_data, opj_tls_t* tls)
     if (band->bandno & 2) {
         opj_tcd_resolution_t *pres = &tilec->resolutions[resno - 1];
         y += pres->y1 - pres->y0;
+    }
+
+    if ((tccp->cblksty & J2K_CCP_CBLKSTY_HT) != 0) {
+        OPJ_FLOAT64 cumwmsedec = 0;
+        if (!opj_t1_ht_cblk_encode(job, t1,
+                                   &tilec->data[(OPJ_SIZE_T)y * tile_w + (OPJ_SIZE_T)x],
+                                   tile_w, &cumwmsedec)) {
+            *(job->pret) = OPJ_FALSE;
+        } else if (job->compute_distortion) {
+            if (job->mutex) {
+                opj_mutex_lock(job->mutex);
+            }
+            job->tile->distotile += cumwmsedec;
+            if (job->mutex) {
+                opj_mutex_unlock(job->mutex);
+            }
+        }
+        opj_free(job);
+        return;
     }
 
     if (!opj_t1_allocate_buffers(
@@ -2501,7 +2676,8 @@ OPJ_BOOL opj_t1_encode_cblks(opj_tcd_t* tcd,
                              opj_tcd_tile_t *tile,
                              opj_tcp_t *tcp,
                              const OPJ_FLOAT64 * mct_norms,
-                             OPJ_UINT32 mct_numcomps
+                             OPJ_UINT32 mct_numcomps,
+                             opj_event_mgr_t *p_manager
                             )
 {
     volatile OPJ_BOOL ret = OPJ_TRUE;
@@ -2552,6 +2728,7 @@ OPJ_BOOL opj_t1_encode_cblks(opj_tcd_t* tcd,
                         job->compute_distortion = compute_distortion;
                         job->pret = &ret;
                         job->mutex = mutex;
+                        job->p_manager = p_manager;
                         opj_thread_pool_submit_job(tp, opj_t1_cblk_encode_processor, job);
 
                     } /* cblkno */

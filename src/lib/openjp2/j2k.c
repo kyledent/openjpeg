@@ -475,6 +475,26 @@ static OPJ_BOOL opj_j2k_read_siz(opj_j2k_t *p_j2k,
                                  opj_event_mgr_t * p_manager);
 
 /**
+ * Tells whether any tile-component is coded with HT code-blocks
+ *
+ * @param       cp              the coding parameters.
+ * @param       numcomps        the number of components.
+*/
+static OPJ_BOOL opj_j2k_is_ht_used(const opj_cp_t *cp, OPJ_UINT32 numcomps);
+
+/**
+ * Writes the CAP marker (extended capabilities), which a codestream with HT
+ * code-blocks must have
+ *
+ * @param       p_j2k           J2K codec.
+ * @param       p_stream        the stream to write data to.
+ * @param       p_manager       the user event manager.
+*/
+static OPJ_BOOL opj_j2k_write_cap(opj_j2k_t *p_j2k,
+                                  opj_stream_private_t *p_stream,
+                                  opj_event_mgr_t * p_manager);
+
+/**
  * Writes the COM marker (comment)
  *
  * @param       p_stream                        the stream to write data to.
@@ -708,6 +728,15 @@ static OPJ_UINT32 opj_j2k_get_max_toc_size(opj_j2k_t *p_j2k);
  * @param       p_j2k   the jpeg2000 codec to use.
  */
 static OPJ_UINT32 opj_j2k_get_specific_header_sizes(opj_j2k_t *p_j2k);
+
+/**
+ * Returns how many bytes the coded data of a tile with HT code-blocks may
+ * need beyond the general estimate of opj_j2k_update_rates(), which allows
+ * 1.4 times the precision in bits per sample; 0 without HT code-blocks.
+ *
+ * @param       p_j2k           J2K codec.
+*/
+static OPJ_UINT64 opj_j2k_get_ht_tile_size_margin(opj_j2k_t *p_j2k);
 
 /**
  * Reads a CRG marker (Component registration)
@@ -2010,7 +2039,8 @@ static OPJ_BOOL opj_j2k_write_siz(opj_j2k_t *p_j2k,
     opj_write_bytes(l_current_ptr, l_size_len - 2, 2); /* L_SIZ */
     l_current_ptr += 2;
 
-    opj_write_bytes(l_current_ptr, cp->rsiz, 2);    /* Rsiz (capabilities) */
+    opj_write_bytes(l_current_ptr, cp->rsiz | (opj_j2k_is_ht_used(cp,
+                    l_image->numcomps) ? J2K_RSIZ_HT : 0U), 2);    /* Rsiz (capabilities) */
     l_current_ptr += 2;
 
     opj_write_bytes(l_current_ptr, l_image->x1, 4); /* Xsiz */
@@ -2058,6 +2088,95 @@ static OPJ_BOOL opj_j2k_write_siz(opj_j2k_t *p_j2k,
     if (opj_stream_write_data(p_stream,
                               p_j2k->m_specific_param.m_encoder.m_header_tile_data, l_size_len,
                               p_manager) != l_size_len) {
+        return OPJ_FALSE;
+    }
+
+    return OPJ_TRUE;
+}
+
+static OPJ_BOOL opj_j2k_is_ht_used(const opj_cp_t *cp, OPJ_UINT32 numcomps)
+{
+    OPJ_UINT32 tileno, compno;
+
+    for (tileno = 0; tileno < cp->tw * cp->th; ++tileno) {
+        const opj_tcp_t *tcp = &cp->tcps[tileno];
+        for (compno = 0; compno < numcomps; ++compno) {
+            if ((tcp->tccps[compno].cblksty & J2K_CCP_CBLKSTY_HT) != 0) {
+                return OPJ_TRUE;
+            }
+        }
+    }
+    return OPJ_FALSE;
+}
+
+/**
+ * Computes the Ccap^15 word of the CAP marker, as OpenJPH does.
+ *
+ * Every code-block of the codestream is an HT code-block with a single HT
+ * set, and there is no region of interest (all enforced when setting up the
+ * encoder, which applies one code-block style to all components): bits
+ * 15-11 are zero (HTONLY, SINGLEHT, RGNFREE, HOMOGENEOUS). Bit 5 is set if
+ * the irreversible wavelet transform is used. Bits 4-0 hold Bp, encoding
+ * the MAGB value B: the largest Mb (guard bits + exponent - 1) over the
+ * subbands for reversible quantisation, and guard bits + exponent minus
+ * the decomposition level of the subband for scalar expounded quantisation.
+ */
+static OPJ_UINT32 opj_j2k_get_ht_ccap15(const opj_cp_t *cp,
+                                        OPJ_UINT32 numcomps)
+{
+    OPJ_UINT32 tileno, compno, bandno;
+    OPJ_INT32 B = 0;
+    OPJ_UINT32 ccap = 0;
+
+    for (tileno = 0; tileno < cp->tw * cp->th; ++tileno) {
+        const opj_tcp_t *tcp = &cp->tcps[tileno];
+        for (compno = 0; compno < numcomps; ++compno) {
+            const opj_tccp_t *tccp = &tcp->tccps[compno];
+            const OPJ_UINT32 numbands = 3 * tccp->numresolutions - 2;
+            const OPJ_INT32 num_decomps = (OPJ_INT32)tccp->numresolutions - 1;
+
+            if (tccp->qmfbid == 0) {
+                ccap |= 0x0020;
+            }
+            for (bandno = 0; bandno < numbands; ++bandno) {
+                OPJ_INT32 t = tccp->stepsizes[bandno].expn +
+                              (OPJ_INT32)tccp->numgbits;
+                if (tccp->qntsty == J2K_CCP_QNTSTY_NOQNT) {
+                    t -= 1;
+                } else {
+                    t -= num_decomps - (bandno ? (OPJ_INT32)(bandno - 1) / 3 : 0);
+                }
+                B = opj_int_max(B, t);
+            }
+        }
+    }
+
+    if (B <= 8) {
+        return ccap;
+    } else if (B < 28) {
+        return ccap | (OPJ_UINT32)(B - 8);
+    }
+    return ccap | (OPJ_UINT32)(13 + (B >> 2));
+}
+
+static OPJ_BOOL opj_j2k_write_cap(opj_j2k_t *p_j2k,
+                                  opj_stream_private_t *p_stream,
+                                  opj_event_mgr_t * p_manager)
+{
+    OPJ_BYTE l_data[10];
+
+    /* preconditions */
+    assert(p_stream != 00);
+    assert(p_j2k != 00);
+    assert(p_manager != 00);
+
+    opj_write_bytes(l_data, J2K_MS_CAP, 2);             /* CAP */
+    opj_write_bytes(l_data + 2, 8, 2);                  /* Lcap */
+    opj_write_bytes(l_data + 4, J2K_PCAP_HT, 4);        /* Pcap: 15444-15 */
+    opj_write_bytes(l_data + 8, opj_j2k_get_ht_ccap15(&p_j2k->m_cp,
+                    p_j2k->m_private_image->numcomps), 2); /* Ccap^15 */
+
+    if (opj_stream_write_data(p_stream, l_data, 10, p_manager) != 10) {
         return OPJ_FALSE;
     }
 
@@ -3467,6 +3586,48 @@ static OPJ_UINT32 opj_j2k_get_max_toc_size(opj_j2k_t *p_j2k)
     }
 
     return 12 * l_max;
+}
+
+static OPJ_UINT64 opj_j2k_get_ht_tile_size_margin(opj_j2k_t *p_j2k)
+{
+    /* Per sample, an HT code-block coded in full needs at most: Mb + 1 bits
+     * of MagSgn data (Mb being the largest number of magnitude bit-planes of
+     * the subbands), 15 bits of VLC and UVLC codes per quad of 4 samples,
+     * and 6 bits of MEL code for each of at most 1.25 MEL symbols per quad;
+     * bit-stuffing adds at most 1 bit in 16. A code-block also takes a few
+     * bytes (counted as 12) to terminate its bitstreams and to be described
+     * in its packet header; twice the component area divided by the nominal
+     * code-block area is taken as the number of code-blocks. All tiles have
+     * the coding parameters of the first one. */
+    const opj_cp_t *l_cp = &p_j2k->m_cp;
+    const opj_image_t *l_image = p_j2k->m_private_image;
+    OPJ_UINT64 l_margin = 0;
+    OPJ_UINT32 compno, bandno;
+
+    for (compno = 0; compno < l_image->numcomps; ++compno) {
+        const opj_tccp_t *l_tccp = &l_cp->tcps[0].tccps[compno];
+        const opj_image_comp_t *l_comp = &l_image->comps[compno];
+        OPJ_INT32 l_Mb = 0;
+        OPJ_FLOAT64 l_bits;
+
+        if ((l_tccp->cblksty & J2K_CCP_CBLKSTY_HT) == 0) {
+            continue;
+        }
+        for (bandno = 0; bandno < 3 * l_tccp->numresolutions - 2; ++bandno) {
+            l_Mb = opj_int_max(l_Mb, l_tccp->stepsizes[bandno].expn +
+                               (OPJ_INT32)l_tccp->numgbits - 1);
+        }
+        l_bits = ((OPJ_FLOAT64)l_Mb + 1.0 + 15.0 / 4.0 + 6.0 * 1.25 / 4.0) * 16.0 /
+                 15.0 + 2.0 * 12.0 * 8.0 / (OPJ_FLOAT64)(1U << (l_tccp->cblkw +
+                         l_tccp->cblkh));
+        l_bits -= 1.4 * (OPJ_FLOAT64)l_comp->prec;
+        if (l_bits > 0) {
+            const OPJ_UINT64 l_samples = (OPJ_UINT64)opj_uint_ceildiv(l_cp->tdx,
+                                         l_comp->dx) * opj_uint_ceildiv(l_cp->tdy, l_comp->dy);
+            l_margin += (OPJ_UINT64)((OPJ_FLOAT64)l_samples * l_bits / 8.0) + 1;
+        }
+    }
+    return l_margin;
 }
 
 static OPJ_UINT32 opj_j2k_get_specific_header_sizes(opj_j2k_t *p_j2k)
@@ -5462,6 +5623,9 @@ static OPJ_BOOL opj_j2k_update_rates(opj_j2k_t *p_j2k,
     /* Arbitrary amount to make the following work: */
     /* bin/test_tile_encoder 1 256 256 17 16 8 0 reversible_no_precinct.j2k 4 4 3 0 0 1 */
     l_tile_size += 500;
+
+    /* HT code-blocks are coded in full and can need more */
+    l_tile_size += opj_j2k_get_ht_tile_size_margin(p_j2k);
 
     l_tile_size += opj_j2k_get_specific_header_sizes(p_j2k);
 
@@ -7735,15 +7899,27 @@ OPJ_BOOL opj_j2k_setup_encoder(opj_j2k_t *p_j2k,
         return OPJ_FALSE;
     }
 
-    /* The code-block style byte is written to COD as given. Only the six
-     * Part-1 mode switches are implemented by the Tier-1 encoder: accepting
-     * any other bit (e.g. the HT bits 0x40 / 0x80) would label MQ-coded
-     * code-blocks with a style no decoder can read them as. */
-    if ((parameters->mode & ~0x3F) != 0) {
+    /* The code-block style byte is written to COD as given, so only the
+     * styles the Tier-1 encoder implements are accepted: the six Part-1 mode
+     * switches, and HT code-blocks (15444-15), coded as a single cleanup
+     * pass. Accepting any other bit (e.g. mixed HT, 0x80) would label the
+     * code-blocks with a style they are not coded in. */
+    if ((parameters->mode & ~0x7F) != 0) {
         opj_event_msg(p_manager, EVT_ERROR,
                       "Unsupported code-block style (mode) bits 0x%x: only 0x01-0x20 "
-                      "(BYPASS, RESET, TERMALL, VSC, PTERM, SEGSYM) are supported\n",
-                      (unsigned)(parameters->mode & ~0x3F));
+                      "(BYPASS, RESET, TERMALL, VSC, PTERM, SEGSYM) and 0x40 (HT) "
+                      "are supported\n",
+                      (unsigned)(parameters->mode & ~0x7F));
+        return OPJ_FALSE;
+    }
+    if ((parameters->mode & J2K_CCP_CBLKSTY_HT) != 0 &&
+            (parameters->mode & ~(J2K_CCP_CBLKSTY_HT | J2K_CCP_CBLKSTY_VSC)) != 0) {
+        opj_event_msg(p_manager, EVT_ERROR,
+                      "HT code-blocks (mode 0x40) can only be combined with VSC "
+                      "(0x08): the mode bits 0x%x (BYPASS, RESET, TERMALL, PTERM, "
+                      "SEGSYM) do not apply to them\n",
+                      (unsigned)(parameters->mode & ~(J2K_CCP_CBLKSTY_HT |
+                                 J2K_CCP_CBLKSTY_VSC)));
         return OPJ_FALSE;
     }
 
@@ -7978,6 +8154,43 @@ OPJ_BOOL opj_j2k_setup_encoder(opj_j2k_t *p_j2k,
                           "Unsupported Part-2 extension enabled\n"
                           "Profile set to NONE.\n");
             parameters->rsiz = OPJ_PROFILE_NONE;
+        }
+    }
+
+    /* An HT code-block is coded as a single cleanup pass, which cannot be
+     * truncated: it goes whole into a single quality layer, and neither a
+     * rate nor a quality target can be met by rate allocation. */
+    if ((parameters->mode & J2K_CCP_CBLKSTY_HT) != 0) {
+        if (parameters->tcp_numlayers != 1) {
+            opj_event_msg(p_manager, EVT_ERROR,
+                          "HT code-blocks support a single quality layer, not %d\n",
+                          parameters->tcp_numlayers);
+            return OPJ_FALSE;
+        }
+        if (parameters->cp_fixed_alloc) {
+            opj_event_msg(p_manager, EVT_ERROR,
+                          "HT code-blocks do not support fixed layer allocation\n");
+            return OPJ_FALSE;
+        }
+        if (parameters->tcp_rates[0] > 0.0f ||
+                (parameters->cp_fixed_quality && parameters->tcp_distoratio[0] > 0.0f)) {
+            opj_event_msg(p_manager, EVT_ERROR,
+                          "HT code-blocks cannot be truncated to meet a rate, size "
+                          "or quality target: the layer must include all coded "
+                          "data (rate 0)\n");
+            return OPJ_FALSE;
+        }
+        if (parameters->roi_compno != -1) {
+            opj_event_msg(p_manager, EVT_ERROR,
+                          "HT code-blocks do not support region of interest "
+                          "shifting\n");
+            return OPJ_FALSE;
+        }
+        if (parameters->rsiz != OPJ_PROFILE_NONE && !OPJ_IS_PART2(parameters->rsiz)) {
+            opj_event_msg(p_manager, EVT_ERROR,
+                          "HT code-blocks cannot be used with the requested "
+                          "profile (Rsiz 0x%04x)\n", parameters->rsiz);
+            return OPJ_FALSE;
         }
     }
 
@@ -8867,6 +9080,34 @@ static OPJ_BOOL opj_j2k_encoding_validation(opj_j2k_t * p_j2k,
         opj_event_msg(p_manager, EVT_ERROR,
                       "Number of resolutions is too high in comparison to the size of tiles\n");
         return OPJ_FALSE;
+    }
+
+    /* An HT code-block is coded with all the magnitude bit-planes (Mb) of its
+     * subband, and the HT block coder handles at most 30 of them. The guard
+     * bits may have changed since the encoder was set up. */
+    {
+        const opj_cp_t *cp = &p_j2k->m_cp;
+        OPJ_UINT32 tileno, compno, bandno;
+        for (tileno = 0; tileno < cp->tw * cp->th; ++tileno) {
+            for (compno = 0; compno < p_j2k->m_private_image->numcomps; ++compno) {
+                const opj_tccp_t *tccp = &cp->tcps[tileno].tccps[compno];
+                if ((tccp->cblksty & J2K_CCP_CBLKSTY_HT) == 0) {
+                    continue;
+                }
+                for (bandno = 0; bandno < 3 * tccp->numresolutions - 2; ++bandno) {
+                    const OPJ_INT32 Mb = tccp->stepsizes[bandno].expn +
+                                         (OPJ_INT32)tccp->numgbits - 1;
+                    if (Mb > 30) {
+                        opj_event_msg(p_manager, EVT_ERROR,
+                                      "HT code-blocks support at most 30 magnitude "
+                                      "bit-planes, but subband %u of component %u "
+                                      "has %d: reduce the precision or the number "
+                                      "of guard bits\n", bandno, compno, Mb);
+                        return OPJ_FALSE;
+                    }
+                }
+            }
+        }
     }
 
     /* PARAMETER VALIDATION */
@@ -13114,6 +13355,12 @@ static OPJ_BOOL opj_j2k_setup_header_writing(opj_j2k_t *p_j2k,
     if (! opj_procedure_list_add_procedure(p_j2k->m_procedure_list,
                                            (opj_procedure)opj_j2k_write_siz, p_manager)) {
         return OPJ_FALSE;
+    }
+    if (opj_j2k_is_ht_used(&p_j2k->m_cp, p_j2k->m_private_image->numcomps)) {
+        if (! opj_procedure_list_add_procedure(p_j2k->m_procedure_list,
+                                               (opj_procedure)opj_j2k_write_cap, p_manager)) {
+            return OPJ_FALSE;
+        }
     }
     if (! opj_procedure_list_add_procedure(p_j2k->m_procedure_list,
                                            (opj_procedure)opj_j2k_write_cod, p_manager)) {

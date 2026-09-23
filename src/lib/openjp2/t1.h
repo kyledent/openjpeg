@@ -220,12 +220,29 @@ Encode the code-blocks of a tile
 @param tcp Tile coding parameters
 @param mct_norms  FIXME DOC
 @param mct_numcomps Number of components used for MCT
+@param p_manager the event manager
 */
 OPJ_BOOL opj_t1_encode_cblks(opj_tcd_t* tcd,
                              opj_tcd_tile_t *tile,
                              opj_tcp_t *tcp,
                              const OPJ_FLOAT64 * mct_norms,
-                             OPJ_UINT32 mct_numcomps);
+                             OPJ_UINT32 mct_numcomps,
+                             opj_event_mgr_t *p_manager);
+
+/**
+Encode one code-block with the HT block coder (ht_enc.c), as a single HT
+cleanup pass that codes the magnitudes in full.
+@param t1 T1 handle: t1->data holds the t1->w x t1->h samples row after row,
+          each with its sign in bit 31 and its quantised magnitude below
+@param cblk Code-block: receives the coded data and cblk->passes[0];
+          cblk->numbps is set to 1, so that Mb - 1 missing MSBs are signalled
+@param max_mag Bitwise OR of all magnitudes; nonzero and smaller than 2^30
+@return OPJ_FALSE if memory could not be allocated or the coded data would
+        not fit the HT codestream syntax
+*/
+OPJ_BOOL opj_t1_ht_encode_cblk(opj_t1_t *t1,
+                               opj_tcd_cblk_enc_t* cblk,
+                               OPJ_UINT32 max_mag);
 
 /**
 Decode the code-blocks of a tile

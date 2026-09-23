@@ -51,11 +51,13 @@ target_link_libraries(test_tile_encoder ${OPENJPEG_LIBRARY_NAME})
 add_executable(test_decode_area test_decode_area.c)
 target_link_libraries(test_decode_area ${OPENJPEG_LIBRARY_NAME})
 
-# In-memory lossless round trips: every code-block style switch, signed and
-# unsigned samples, and the inline (0) and one-worker (1) thread paths.
+# In-memory lossless round trips: every code-block style switch, HT (64) and
+# HT with VSC (72) included, signed and unsigned samples, and the inline (0)
+# and one-worker (1) thread paths. Every run also checks the Rsiz bit and the
+# CAP marker (and, for JP2, the brand) against the code-block style.
 add_executable(test_encode_roundtrip test_encode_roundtrip.c)
 target_link_libraries(test_encode_roundtrip ${OPENJPEG_LIBRARY_NAME})
-foreach(mode 0 1 2 4 5 8 9 16 32 63)
+foreach(mode 0 1 2 4 5 8 9 16 32 63 64 72)
   add_test(NAME roundtrip_mode_${mode} COMMAND test_encode_roundtrip -mode ${mode})
   add_test(NAME roundtrip_mode_${mode}_s16 COMMAND test_encode_roundtrip -mode ${mode} -prec 16 -sgnd 1)
 endforeach()
@@ -79,11 +81,53 @@ if(UNIX)
   add_test(NAME thread_pool_reuse_disabled COMMAND test_thread_pool_reuse)
   set_tests_properties(thread_pool_reuse_disabled PROPERTIES ENVIRONMENT "OPJ_THREAD_POOL_CACHE=0")
 endif()
+# HT code-blocks: precisions, image sizes that are not multiples of the
+# code-block size, code-block shapes, resolution counts, threads, JP2 (brand
+# "jph "), several components, tiles, precincts, and the irreversible
+# transform (whose decoded image must equal the MQ-coded one).
+add_test(NAME roundtrip_ht_u8 COMMAND test_encode_roundtrip -mode 64 -prec 8)
+add_test(NAME roundtrip_ht_u16 COMMAND test_encode_roundtrip -mode 64 -prec 16)
+add_test(NAME roundtrip_ht_s16_1030x517 COMMAND test_encode_roundtrip -mode 64 -prec 16 -sgnd 1 -w 1030 -h 517)
+add_test(NAME roundtrip_ht_u8_small COMMAND test_encode_roundtrip -mode 64 -prec 8 -w 17 -h 5 -res 2)
+foreach(cb 64x64 32x32 16x16 64x32 32x64 128x16 1024x4 4x1024)
+  string(REPLACE "x" ";" cbwh ${cb})
+  list(GET cbwh 0 cbw)
+  list(GET cbwh 1 cbh)
+  add_test(NAME roundtrip_ht_cblk_${cb} COMMAND test_encode_roundtrip -mode 64 -cblkw ${cbw} -cblkh ${cbh} -w 1030 -h 1100)
+endforeach()
+foreach(res 1 2 3 4 5 6)
+  add_test(NAME roundtrip_ht_res_${res} COMMAND test_encode_roundtrip -mode 64 -res ${res})
+endforeach()
+foreach(t 0 1 4)
+  add_test(NAME roundtrip_ht_threads_${t} COMMAND test_encode_roundtrip -mode 64 -threads ${t} -dec-threads ${t} -w 1030 -h 517)
+endforeach()
+add_test(NAME roundtrip_ht_jp2 COMMAND test_encode_roundtrip -mode 64 -jp2)
+add_test(NAME roundtrip_ht_vsc_jp2 COMMAND test_encode_roundtrip -mode 72 -jp2 -prec 16 -sgnd 1)
+add_test(NAME roundtrip_ht_rgb COMMAND test_encode_roundtrip -mode 64 -comps 3 -mct 1 -prec 8)
+add_test(NAME roundtrip_ht_tiles COMMAND test_encode_roundtrip -mode 64 -tile 128 -res 4)
+add_test(NAME roundtrip_ht_precincts COMMAND test_encode_roundtrip -mode 64 -prc 64 -cblk 32)
+add_test(NAME roundtrip_ht_irrev COMMAND test_encode_roundtrip -mode 64 -irrev)
+add_test(NAME roundtrip_ht_irrev_rgb_s16 COMMAND test_encode_roundtrip -mode 64 -irrev -comps 3 -mct 1 -prec 16 -sgnd 1)
 # Code-block style bits the encoder does not implement must be refused, not
-# written into COD over MQ-coded code-blocks.
-foreach(mode 0x40 0x80 0x100)
+# written into COD over code-blocks coded otherwise.
+foreach(mode 0x80 0xC0 0x100)
   add_test(NAME reject_mode_${mode} COMMAND test_encode_roundtrip -mode ${mode} -expect-reject)
 endforeach()
+# HT code-blocks: Part-1 mode switches other than VSC do not apply; a single
+# cleanup pass cannot meet a rate target or fill several layers; no ROI; at
+# most 30 magnitude bit-planes (checked after the guard bits are final).
+foreach(mode 0x41 0x42 0x44 0x50 0x60)
+  add_test(NAME reject_ht_mode_${mode} COMMAND test_encode_roundtrip -mode ${mode} -expect-reject)
+endforeach()
+add_test(NAME reject_ht_rate COMMAND test_encode_roundtrip -mode 64 -rate 20 -expect-reject)
+add_test(NAME reject_ht_layers COMMAND test_encode_roundtrip -mode 64 -layers 2 -expect-reject)
+add_test(NAME reject_ht_roi COMMAND test_encode_roundtrip -mode 64 -roi -expect-reject)
+add_test(NAME reject_ht_prec28 COMMAND test_encode_roundtrip -mode 64 -prec 28 -expect-reject)
+add_test(NAME reject_ht_prec26_guard4 COMMAND test_encode_roundtrip -mode 64 -prec 26 -guard 4 -expect-reject)
+# ... and a coefficient beyond the range of its subband (no guard bits) is
+# refused rather than written as an undecodable code-block
+add_test(NAME reject_ht_guard0_checker COMMAND test_encode_roundtrip -mode 64 -prec 8 -w 256 -h 256 -checker 2 -guard 0 -expect-reject)
+add_test(NAME roundtrip_ht_guard1_checker COMMAND test_encode_roundtrip -mode 64 -prec 8 -w 256 -h 256 -checker 2 -guard 1)
 
 # Let's try a couple of possibilities:
 add_test(NAME tte0 COMMAND test_tile_encoder)

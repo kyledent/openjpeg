@@ -242,10 +242,22 @@ static void encode_help_display(void)
     fprintf(stdout, "-M <key value>\n");
     fprintf(stdout, "    Mode switch.\n");
     fprintf(stdout, "    [1=BYPASS(LAZY) 2=RESET 4=RESTART(TERMALL)\n");
-    fprintf(stdout, "    8=VSC 16=ERTERM(SEGTERM) 32=SEGMARK(SEGSYM)]\n");
+    fprintf(stdout, "    8=VSC 16=ERTERM(SEGTERM) 32=SEGMARK(SEGSYM)\n");
+    fprintf(stdout, "    64=HT (see -HT), which can only be combined with VSC]\n");
     fprintf(stdout, "    Indicate multiple modes by adding their values.\n");
     fprintf(stdout,
             "      Example: RESTART(4) + RESET(2) + SEGMARK(32) => -M 38\n");
+    fprintf(stdout, "-HT\n");
+    fprintf(stdout,
+            "    Code the code-blocks with the High Throughput block coder of\n");
+    fprintf(stdout,
+            "    JPEG 2000 Part 15 (HTJ2K): same as -M 64. Each code-block is\n");
+    fprintf(stdout,
+            "    coded in full as a single pass, so there must be a single\n");
+    fprintf(stdout,
+            "    quality layer and no rate or quality target (-r, -q).\n");
+    fprintf(stdout,
+            "    A .jp2 (or .jph) output file gets the brand of JPH files.\n");
     fprintf(stdout, "-TP <R|L|C>\n");
     fprintf(stdout, "    Divide packets of every tile into tile-parts.\n");
     fprintf(stdout,
@@ -532,10 +544,10 @@ static int get_file_format(char *filename)
 {
     unsigned int i;
     static const char *extension[] = {
-        "pgx", "pnm", "pgm", "ppm", "pbm", "pam", "bmp", "tif", "tiff", "raw", "yuv", "rawl", "tga", "png", "j2k", "jp2", "j2c", "jpc"
+        "pgx", "pnm", "pgm", "ppm", "pbm", "pam", "bmp", "tif", "tiff", "raw", "yuv", "rawl", "tga", "png", "j2k", "jp2", "j2c", "jpc", "jph", "jhc"
     };
     static const int format[] = {
-        PGX_DFMT, PXM_DFMT, PXM_DFMT, PXM_DFMT, PXM_DFMT, PXM_DFMT, BMP_DFMT, TIF_DFMT, TIF_DFMT, RAW_DFMT, RAW_DFMT, RAWL_DFMT, TGA_DFMT, PNG_DFMT, J2K_CFMT, JP2_CFMT, J2K_CFMT, J2K_CFMT
+        PGX_DFMT, PXM_DFMT, PXM_DFMT, PXM_DFMT, PXM_DFMT, PXM_DFMT, BMP_DFMT, TIF_DFMT, TIF_DFMT, RAW_DFMT, RAW_DFMT, RAWL_DFMT, TGA_DFMT, PNG_DFMT, J2K_CFMT, JP2_CFMT, J2K_CFMT, J2K_CFMT, JP2_CFMT, J2K_CFMT
     };
     char * ext = strrchr(filename, '.');
     if (ext == NULL) {
@@ -638,7 +650,8 @@ static int parse_cmdline_encoder(int argc, char **argv,
         {"threads",   REQ_ARG, NULL, 'B'},
         {"TLM", NO_ARG, NULL, 'D'},
         {"TargetBitDepth", REQ_ARG, NULL, 'X'},
-        {"GuardBits", REQ_ARG, NULL, 'G'}
+        {"GuardBits", REQ_ARG, NULL, 'G'},
+        {"HT", NO_ARG, NULL, 'H'}
     };
 
     /* parse the command line */
@@ -695,7 +708,8 @@ static int parse_cmdline_encoder(int argc, char **argv,
                 break;
             default:
                 fprintf(stderr,
-                        "Unknown output format image %s [only *.j2k, *.j2c or *.jp2]!! \n", outfile);
+                        "Unknown output format image %s [only *.j2k, *.j2c, *.jp2, *.jph or *.jhc]!! \n",
+                        outfile);
                 return 1;
             }
             if (opj_strcpy_s(parameters->outfile, sizeof(parameters->outfile),
@@ -718,7 +732,8 @@ static int parse_cmdline_encoder(int argc, char **argv,
                 img_fol->out_format = opj_optarg;
                 break;
             default:
-                fprintf(stderr, "Unknown output format image [only j2k, j2c, jp2]!! \n");
+                fprintf(stderr,
+                        "Unknown output format image [only j2k, j2c, jp2, jph, jhc]!! \n");
                 return 1;
             }
         }
@@ -1100,13 +1115,26 @@ static int parse_cmdline_encoder(int argc, char **argv,
         case 'M': {         /* Mode switch pas tous au point !! */
             int value = 0;
             if (sscanf(opj_optarg, "%d", &value) == 1) {
-                for (i = 0; i <= 5; i++) {
+                if (value < 0 || value > 127) {
+                    fprintf(stderr,
+                            "[ERROR] -M %d: the mode switches add up to at most 127\n",
+                            value);
+                    return 1;
+                }
+                for (i = 0; i <= 6; i++) {
                     int cache = value & (1 << i);
                     if (cache) {
                         parameters->mode |= (1 << i);
                     }
                 }
             }
+        }
+        break;
+
+        /* ------------------------------------------------------ */
+
+        case 'H': {         /* HT code-blocks */
+            parameters->mode |= 0x40;
         }
         break;
 

@@ -59,6 +59,7 @@
 #define     JP2_DTBL 0x6474626c    /**< Data Reference box */
 #define     JP2_BPCC 0x62706363    /**< Bits per component box */
 #define     JP2_JP2  0x6a703220    /**< File type fields */
+#define     JP2_JPH  0x6a706820    /**< File type fields of an HTJ2K (15444-15) file */
 
 /* For the future */
 /* #define JP2_RES 0x72657320 */  /**< Resolution box (super-box) */

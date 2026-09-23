@@ -180,7 +180,8 @@ static OPJ_BOOL opj_tcd_mct_encode(opj_tcd_t *p_tcd);
 
 static OPJ_BOOL opj_tcd_dwt_encode(opj_tcd_t *p_tcd);
 
-static OPJ_BOOL opj_tcd_t1_encode(opj_tcd_t *p_tcd);
+static OPJ_BOOL opj_tcd_t1_encode(opj_tcd_t *p_tcd,
+                                  opj_event_mgr_t *p_manager);
 
 static OPJ_BOOL opj_tcd_t2_encode(opj_tcd_t *p_tcd,
                                   OPJ_BYTE * p_dest_data,
@@ -1510,7 +1511,7 @@ OPJ_BOOL opj_tcd_encode_tile(opj_tcd_t *p_tcd,
         /* FIXME  _ProfStop(PGROUP_DWT); */
 
         /* FIXME  _ProfStart(PGROUP_T1); */
-        if (! opj_tcd_t1_encode(p_tcd)) {
+        if (! opj_tcd_t1_encode(p_tcd, p_manager)) {
             return OPJ_FALSE;
         }
         /* FIXME _ProfStop(PGROUP_T1); */
@@ -2686,7 +2687,8 @@ static OPJ_BOOL opj_tcd_dwt_encode(opj_tcd_t *p_tcd)
     return OPJ_TRUE;
 }
 
-static OPJ_BOOL opj_tcd_t1_encode(opj_tcd_t *p_tcd)
+static OPJ_BOOL opj_tcd_t1_encode(opj_tcd_t *p_tcd,
+                                  opj_event_mgr_t *p_manager)
 {
     const OPJ_FLOAT64 * l_mct_norms;
     OPJ_UINT32 l_mct_numcomps = 0U;
@@ -2707,7 +2709,7 @@ static OPJ_BOOL opj_tcd_t1_encode(opj_tcd_t *p_tcd)
 
     return opj_t1_encode_cblks(p_tcd,
                                p_tcd->tcd_image->tiles, l_tcp, l_mct_norms,
-                               l_mct_numcomps);
+                               l_mct_numcomps, p_manager);
 
     return OPJ_TRUE;
 }

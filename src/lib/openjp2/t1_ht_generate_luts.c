@@ -969,3 +969,144 @@ OPJ_BOOL vlc_init_tables()
   */
 OPJ_BOOL vlc_tables_initialized = OPJ_FALSE;
 
+
+//************************************************************************/
+/** @defgroup vlc_encoding_tables_grp VLC encoding tables
+  *  @{
+  *  VLC tables to encode a quad, ported from the OpenJPH block encoder.
+  *                                                                       \n
+  *  The table index is 11 bits: (c_q << 8) + (rho << 4) + emb, where
+  *  \li \c c_q : 3bits -> the context of the quad                        \n
+  *  \li \c rho : 4bits -> significant samples within the quad            \n
+  *  \li \c emb : 4bits -> samples whose exponent equals the quad's
+  *                        largest exponent (zero when u_off is 0)        \n
+  *                                                                       \n
+  *  Each entry is (cwd << 8) + (cwd_len << 4) + e_k, where cwd is the VLC
+  *  codeword, cwd_len its length, and e_k the EMB pattern it signals.
+  *  Entries that cannot occur are zero.
+  */
+
+/// @brief vlc_enc_tbl0 contains encoding information for the initial row
+///        of quads
+int vlc_enc_tbl0[2048] = { 0 };
+/// @brief vlc_enc_tbl1 contains encoding information for non-initial rows
+///        of quads
+int vlc_enc_tbl1[2048] = { 0 };
+/// @}
+
+//************************************************************************/
+/** @ingroup vlc_encoding_tables_grp
+  *  @brief Fills one encoding table from a source table
+  *
+  *  For a quad with u_off = 1, several codewords can be valid; the one
+  *  chosen signals the largest number of EMB bits, and among those the
+  *  last one listed in the source table, exactly as OpenJPH does.
+  */
+static void vlc_enc_init_table(const vlc_src_table_t *src_tbl,
+                               size_t tbl_size, int *tgt_tbl)
+{
+    for (int i = 0; i < 2048; ++i) {
+        int c_q = i >> 8, rho = (i >> 4) & 0xF, emb = i & 0xF;
+        const vlc_src_table_t *best_entry = NULL;
+
+        tgt_tbl[i] = 0;
+        if (((emb & rho) != emb) || (rho == 0 && c_q == 0)) {
+            continue;
+        }
+        if (emb) { // u_off = 1
+            int best_e_k = -1;
+            for (size_t j = 0; j < tbl_size; ++j) {
+                if (src_tbl[j].c_q == c_q && src_tbl[j].rho == rho
+                        && src_tbl[j].u_off == 1
+                        && (emb & src_tbl[j].e_k) == src_tbl[j].e_1) {
+                    // the codeword whose e_k has the most bits set
+                    int ones_count = 0;
+                    for (int b = 0; b < 4; ++b) {
+                        ones_count += (src_tbl[j].e_k >> b) & 1;
+                    }
+                    if (ones_count >= best_e_k) {
+                        best_entry = src_tbl + j;
+                        best_e_k = ones_count;
+                    }
+                }
+            }
+        } else { // u_off = 0
+            for (size_t j = 0; j < tbl_size; ++j) {
+                if (src_tbl[j].c_q == c_q && src_tbl[j].rho == rho
+                        && src_tbl[j].u_off == 0) {
+                    best_entry = src_tbl + j;
+                    break;
+                }
+            }
+        }
+        assert(best_entry != NULL);
+        tgt_tbl[i] = (best_entry->cwd << 8) + (best_entry->cwd_len << 4)
+                     + best_entry->e_k;
+    }
+}
+
+//************************************************************************/
+/** @ingroup vlc_encoding_tables_grp
+  *  @brief Initializes vlc_enc_tbl0 and vlc_enc_tbl1 from tbl0 and tbl1
+  */
+OPJ_BOOL vlc_enc_init_tables(void)
+{
+    vlc_enc_init_table(tbl0, sizeof(tbl0) / sizeof(vlc_src_table_t),
+                       vlc_enc_tbl0);
+    vlc_enc_init_table(tbl1, sizeof(tbl1) / sizeof(vlc_src_table_t),
+                       vlc_enc_tbl1);
+    return OPJ_TRUE;
+}
+
+//************************************************************************/
+/** @defgroup uvlc_encoding_tables_grp UVLC encoding table
+  *  @{
+  *  UVLC codes for u = 0 to 32, which covers every u a code-block with at
+  *  most 30 magnitude bit-planes can produce. Each entry packs:        \n
+  *  \li bits  0-2  : prefix codeword                                     \n
+  *  \li bits  3-5  : prefix length                                       \n
+  *  \li bits  6-10 : suffix codeword                                     \n
+  *  \li bits 11-13 : suffix length                                       \n
+  *  Codewords are emitted LSB first. u = 0 has no codeword.
+  */
+int uvlc_enc_tbl[33] = { 0 };
+/// @}
+
+//************************************************************************/
+/** @ingroup uvlc_encoding_tables_grp
+  *  @brief Initializes uvlc_enc_tbl
+  */
+OPJ_BOOL uvlc_enc_init_table(void)
+{
+    for (int u = 0; u < 33; ++u) {
+        int pre, pre_len, suf, suf_len;
+        if (u == 0) {
+            pre = 0;
+            pre_len = 0;
+            suf = 0;
+            suf_len = 0;
+        } else if (u == 1) {
+            pre = 1;
+            pre_len = 1;
+            suf = 0;
+            suf_len = 0;
+        } else if (u == 2) {
+            pre = 2;
+            pre_len = 2;
+            suf = 0;
+            suf_len = 0;
+        } else if (u <= 4) {
+            pre = 4;
+            pre_len = 3;
+            suf = u - 3;
+            suf_len = 1;
+        } else {
+            pre = 0;
+            pre_len = 3;
+            suf = u - 5;
+            suf_len = 5;
+        }
+        uvlc_enc_tbl[u] = pre | (pre_len << 3) | (suf << 6) | (suf_len << 11);
+    }
+    return OPJ_TRUE;
+}

@@ -40,7 +40,7 @@ Valid input image extensions are
 .B .bmp, .pgm, .pgx, .png, .pnm, .ppm, .raw, .tga, .tif \fR. For PNG resp. TIF it needs libpng resp. libtiff .
 .SP
 Valid output image extensions are
-.B .j2k, .jp2
+.B .j2k, .j2c, .jpc, .jhc, .jp2, .jph
 .SH SYNOPSIS
 .P
 .B opj_compress \-i \fRinfile.bmp \fB-o \fRoutfile.j2k
@@ -109,6 +109,11 @@ sub-sampling factor (e.g. \-s 2,2). Default: No sub-sampling in x or y direction
 .B \-\^F " rawWidth,rawHeight,rawComp,rawBitDepth,s_or_u"
 characteristics of the raw input image
 .TP
+.B \-\^HT
+code the code-blocks with the High Throughput block coder of JPEG 2000 Part 15 (HTJ2K); same as \-M 64.
+Each code-block is coded in full as a single pass, so there must be a single quality layer and no rate or quality target (\-r, \-q).
+A JP2 output file (.jp2 or .jph) gets the brand of JPH files.
+.TP
 .B \-\^I
 (Use the irreversible DWT 9-7. Default: Reversible DWT 5-3)
 .TP
@@ -116,7 +121,7 @@ characteristics of the raw input image
 (directory containing input files)
 .TP
 .B \-\^M " n"
-mode switch with values: 1, 2, 4, 8, 16, 32. Default:No mode switch activated. 
+mode switch with values: 1, 2, 4, 8, 16, 32, 64. Default:No mode switch activated.
 .br
 \fIMeaning:\fR
 .br
@@ -131,6 +136,8 @@ VSC(8)
 ERTERM(16) 
 .br
 SEGMARK(32)
+.br
+HT(64), which can only be combined with VSC(8): see \-HT
 .br
 Values can be added: RESTART(4) + RESET(2) + SEGMARK(32) = \-M 38
 .TP
