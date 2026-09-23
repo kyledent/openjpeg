@@ -19,6 +19,20 @@ set(OPENJPEG_LIBRARY_NAME openjp2)
 
 project(${OPENJPEG_NAMESPACE} C)
 
+# Default to the Release configuration (the one INSTALL.md documents) when the
+# caller did not choose one. Without this, a plain "cmake ." gives an empty
+# build type: no optimisation level and assertions enabled, which runs the
+# codec at roughly half speed. Only applies to a top-level, single-config
+# build, so a parent project embedding OpenJPEG keeps control of its own.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR
+   AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  message(STATUS "No build type specified: defaulting to Release")
+  set(CMAKE_BUILD_TYPE Release CACHE STRING
+      "Build type: Debug, Release, RelWithDebInfo or MinSizeRel" FORCE)
+  set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+               Debug Release RelWithDebInfo MinSizeRel)
+endif()
+
 # Do full dependency headers.
 include_regular_expression("^.*$")
 
