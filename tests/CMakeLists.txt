@@ -63,6 +63,12 @@ foreach(t 0 1 2 4)
   add_test(NAME roundtrip_threads_${t} COMMAND test_encode_roundtrip -threads ${t} -dec-threads ${t} -w 1030 -h 517)
 endforeach()
 add_test(NAME roundtrip_u8_small COMMAND test_encode_roundtrip -prec 8 -w 17 -h 5 -res 2)
+# Selective arithmetic coding bypass: raw passes, including code-blocks whose
+# height is not a multiple of 4 (the partial last stripe).
+foreach(mode 1 5 9 17)
+  add_test(NAME roundtrip_bypass_${mode}_odd COMMAND test_encode_roundtrip -mode ${mode} -w 203 -h 201 -cblk 32 -prec 16 -sgnd 1)
+  add_test(NAME roundtrip_bypass_${mode}_tall COMMAND test_encode_roundtrip -mode ${mode} -w 1030 -h 517 -prec 14)
+endforeach()
 add_test(NAME roundtrip_jp2 COMMAND test_encode_roundtrip -jp2)
 # Code-block style bits the encoder does not implement must be refused, not
 # written into COD over MQ-coded code-blocks.
