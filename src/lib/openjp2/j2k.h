@@ -595,6 +595,10 @@ typedef struct opj_j2k_enc {
     /** Number of components */
     OPJ_UINT32 m_nb_comps;
 
+    /** Base quantisation step of the irreversible transform, as a fraction of
+     * each component's sample range (option QSTEP); 0 when not set */
+    OPJ_FLOAT64 m_qstep;
+
 } opj_j2k_enc_t;
 
 

@@ -1629,6 +1629,14 @@ OPJ_API OPJ_BOOL OPJ_CALLCONV opj_setup_encoder(opj_codec_t *p_codec,
  * <li>GUARD_BITS=value. Number of guard bits in [0,7] range. Default value is 2.
  *     1 may be used sometimes (like in SMPTE DCP Bv2.1 Application Profile for 2K images).
  *     Since 2.5.0</li>
+ * <li>QSTEP=value. Base quantisation step of the irreversible 9/7 transform,
+ *     as a fraction of the sample range, in (0, 1]: each subband's step is
+ *     value divided by its synthesis norms, as OpenJPH's qstep is. The default
+ *     steps correspond to 2^-prec (one sample), which QSTEP=2^-prec reproduces
+ *     exactly. This is how High-Throughput (HT) code-blocks, which cannot be
+ *     truncated by rate allocation, are coded lossily; with other code-block
+ *     styles it can be combined with rate targets. Requires irreversible = 1.
+ *     Must be given after opj_setup_encoder() and before opj_start_compress().</li>
  * </ul>
  *
  * @param p_codec       Compressor handle

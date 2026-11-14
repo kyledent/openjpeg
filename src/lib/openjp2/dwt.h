@@ -112,6 +112,16 @@ Explicit calculation of the Quantization Stepsizes
 @param prec Precint analyzed
 */
 void opj_dwt_calc_explicit_stepsizes(opj_tccp_t * tccp, OPJ_UINT32 prec);
+/**
+Explicit calculation of the Quantization Stepsizes, each multiplied by scale
+(scale 1.0 gives exactly opj_dwt_calc_explicit_stepsizes)
+@param tccp Tile-component coding parameters
+@param prec Precision of the component
+@param scale Multiplier of every subband's step size
+@return OPJ_FALSE if a step size cannot be coded in a QCD/QCC marker
+*/
+OPJ_BOOL opj_dwt_calc_explicit_stepsizes_scaled(opj_tccp_t * tccp,
+        OPJ_UINT32 prec, OPJ_FLOAT64 scale);
 /* ----------------------------------------------------------------------- */
 /*@}*/
 

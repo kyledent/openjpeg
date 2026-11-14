@@ -2188,10 +2188,16 @@ OPJ_FLOAT64 opj_dwt_getnorm_real(OPJ_UINT32 level, OPJ_UINT32 orient)
 
 void opj_dwt_calc_explicit_stepsizes(opj_tccp_t * tccp, OPJ_UINT32 prec)
 {
+    (void)opj_dwt_calc_explicit_stepsizes_scaled(tccp, prec, 1.0);
+}
+
+OPJ_BOOL opj_dwt_calc_explicit_stepsizes_scaled(opj_tccp_t * tccp,
+        OPJ_UINT32 prec, OPJ_FLOAT64 scale)
+{
     OPJ_UINT32 numbands, bandno;
     numbands = 3 * tccp->numresolutions - 2;
     for (bandno = 0; bandno < numbands; bandno++) {
-        OPJ_FLOAT64 stepsize;
+        OPJ_FLOAT64 stepsize, scaled;
         OPJ_UINT32 resno, level, orient, gain;
 
         resno = (bandno == 0) ? 0 : ((bandno - 1) / 3 + 1);
@@ -2204,10 +2210,21 @@ void opj_dwt_calc_explicit_stepsizes(opj_tccp_t * tccp, OPJ_UINT32 prec)
         } else {
             OPJ_FLOAT64 norm = opj_dwt_getnorm_real(level, orient);
             stepsize = (1 << (gain)) / norm;
+            if (scale != 1.0) {
+                stepsize *= scale;
+            }
         }
-        opj_dwt_encode_stepsize((OPJ_INT32) floor(stepsize * 8192.0),
+        scaled = floor(stepsize * 8192.0);
+        if (!(scaled >= 1.0) || scaled > 2147483647.0) {
+            return OPJ_FALSE;
+        }
+        opj_dwt_encode_stepsize((OPJ_INT32) scaled,
                                 (OPJ_INT32)(prec + gain), &tccp->stepsizes[bandno]);
+        if (tccp->stepsizes[bandno].expn < 0 || tccp->stepsizes[bandno].expn > 31) {
+            return OPJ_FALSE;
+        }
     }
+    return OPJ_TRUE;
 }
 
 /* <summary>                             */

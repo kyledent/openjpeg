@@ -108,6 +108,31 @@ add_test(NAME roundtrip_ht_tiles COMMAND test_encode_roundtrip -mode 64 -tile 12
 add_test(NAME roundtrip_ht_precincts COMMAND test_encode_roundtrip -mode 64 -prc 64 -cblk 32)
 add_test(NAME roundtrip_ht_irrev COMMAND test_encode_roundtrip -mode 64 -irrev)
 add_test(NAME roundtrip_ht_irrev_rgb_s16 COMMAND test_encode_roundtrip -mode 64 -irrev -comps 3 -mct 1 -prec 16 -sgnd 1)
+# QSTEP: the base quantisation step of the irreversible transform, which is
+# how HT code-blocks are coded lossily. 2^-prec is the default step, so the
+# codestream must be byte-identical to one without the option; a coarser step
+# must give a smaller codestream whose HT decode equals the MQ-coded one.
+foreach(mode 0 64)
+  add_test(NAME qstep_default_mode_${mode} COMMAND test_encode_roundtrip -mode ${mode} -irrev -qstep 0.000244140625 -qstep-check default)
+  add_test(NAME qstep_default_mode_${mode}_s16 COMMAND test_encode_roundtrip -mode ${mode} -irrev -prec 16 -sgnd 1 -qstep 0.0000152587890625 -qstep-check default)
+endforeach()
+foreach(q 0.001 0.004 0.02)
+  add_test(NAME qstep_ht_lossy_${q} COMMAND test_encode_roundtrip -mode 64 -irrev -qstep ${q} -qstep-check smaller)
+  add_test(NAME qstep_mq_lossy_${q} COMMAND test_encode_roundtrip -mode 0 -irrev -qstep ${q} -qstep-check smaller)
+  add_test(NAME qstep_bypass_lossy_${q} COMMAND test_encode_roundtrip -mode 1 -irrev -qstep ${q} -qstep-check smaller)
+endforeach()
+add_test(NAME qstep_ht_lossy_s16_1030x517 COMMAND test_encode_roundtrip -mode 64 -irrev -prec 16 -sgnd 1 -w 1030 -h 517 -qstep 0.0005 -qstep-check smaller)
+add_test(NAME qstep_ht_lossy_rgb COMMAND test_encode_roundtrip -mode 64 -irrev -comps 3 -mct 1 -prec 8 -qstep 0.01 -qstep-check smaller)
+add_test(NAME qstep_ht_lossy_tiles COMMAND test_encode_roundtrip -mode 64 -irrev -tile 128 -res 4 -qstep 0.01 -qstep-check smaller)
+add_test(NAME qstep_ht_lossy_threads_4 COMMAND test_encode_roundtrip -mode 64 -irrev -threads 4 -dec-threads 4 -w 1030 -h 517 -qstep 0.005)
+add_test(NAME qstep_ht_lossy_vsc_jp2 COMMAND test_encode_roundtrip -mode 72 -irrev -jp2 -prec 16 -sgnd 1 -qstep 0.002)
+add_test(NAME qstep_mq_lossy_with_rate COMMAND test_encode_roundtrip -mode 0 -irrev -qstep 0.002 -rate 20)
+add_test(NAME qstep_rejected_reversible COMMAND test_encode_roundtrip -mode 64 -qstep 0.01 -expect-reject)
+add_test(NAME qstep_rejected_negative COMMAND test_encode_roundtrip -mode 64 -irrev -qstep -0.5 -expect-reject)
+add_test(NAME qstep_rejected_above_one COMMAND test_encode_roundtrip -mode 64 -irrev -qstep 2 -expect-reject)
+add_test(NAME qstep_rejected_nan COMMAND test_encode_roundtrip -mode 64 -irrev -qstep nan -expect-reject)
+add_test(NAME qstep_rejected_inf COMMAND test_encode_roundtrip -mode 64 -irrev -qstep inf -expect-reject)
+add_test(NAME qstep_rejected_too_fine COMMAND test_encode_roundtrip -mode 64 -irrev -qstep 1e-30 -expect-reject)
 # Code-block style bits the encoder does not implement must be refused, not
 # written into COD over code-blocks coded otherwise.
 foreach(mode 0x80 0xC0 0x100)

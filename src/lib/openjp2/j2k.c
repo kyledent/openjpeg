@@ -12845,6 +12845,18 @@ OPJ_BOOL opj_j2k_set_decoded_resolution_factor(opj_j2k_t *p_j2k,
 
 /* ----------------------------------------------------------------------- */
 
+/**
+ * Whether v is finite, by its IEEE 754 exponent bits rather than by comparison:
+ * the library is built with -ffast-math in Release, under which the compiler
+ * may assume no NaN and fold comparisons (and isnan()) that would reject one.
+ */
+static OPJ_BOOL opj_j2k_is_finite(OPJ_FLOAT64 v)
+{
+    OPJ_UINT64 bits;
+    memcpy(&bits, &v, sizeof(bits));
+    return ((bits >> 52) & 0x7FFU) != 0x7FFU;
+}
+
 OPJ_BOOL opj_j2k_encoder_set_extra_options(
     opj_j2k_t *p_j2k,
     const char* const* p_options,
@@ -12896,6 +12908,34 @@ OPJ_BOOL opj_j2k_encoder_set_extra_options(
                     tccp->numgbits = (OPJ_UINT32)numgbits;
                 }
             }
+        } else if (strncmp(*p_option_iter, "QSTEP=", strlen("QSTEP=")) == 0) {
+            OPJ_UINT32 tileno;
+            opj_cp_t *cp = &(p_j2k->m_cp);
+            const char *value = *p_option_iter + strlen("QSTEP=");
+            char *end = NULL;
+            OPJ_FLOAT64 qstep = strtod(value, &end);
+
+            if (end == value || *end != '\0' || !opj_j2k_is_finite(qstep) ||
+                    !(qstep > 0.0) || !(qstep <= 1.0)) {
+                opj_event_msg(p_manager, EVT_ERROR,
+                              "Invalid value for option: %s. Should be a step in (0, 1], "
+                              "as a fraction of the sample range\n", *p_option_iter);
+                return OPJ_FALSE;
+            }
+            for (tileno = 0; tileno < cp->tw * cp->th; tileno++) {
+                OPJ_UINT32 i;
+                opj_tcp_t *tcp = &cp->tcps[tileno];
+                for (i = 0; i < p_j2k->m_specific_param.m_encoder.m_nb_comps; i++) {
+                    const opj_tccp_t *tccp = &tcp->tccps[i];
+                    if (tccp->qmfbid != 0 || tccp->qntsty == J2K_CCP_QNTSTY_NOQNT) {
+                        opj_event_msg(p_manager, EVT_ERROR,
+                                      "Option %s applies to the irreversible 9/7 "
+                                      "transform only (irreversible = 1)\n", *p_option_iter);
+                        return OPJ_FALSE;
+                    }
+                }
+            }
+            p_j2k->m_specific_param.m_encoder.m_qstep = qstep;
         } else {
             opj_event_msg(p_manager, EVT_ERROR,
                           "Invalid option: %s.\n", *p_option_iter);
@@ -13032,6 +13072,37 @@ OPJ_BOOL opj_j2k_end_compress(opj_j2k_t *p_j2k,
     return OPJ_TRUE;
 }
 
+/**
+ * Applies the QSTEP option: every subband step size of every tile-component
+ * becomes its default (which corresponds to a base step of one sample) times
+ * qstep * 2^prec, i.e. a base step of qstep of the component's sample range,
+ * divided per subband by the synthesis norms, as OpenJPH's qstep does.
+ * QSTEP = 2^-prec therefore leaves the step sizes unchanged.
+ */
+static OPJ_BOOL opj_j2k_apply_qstep(opj_j2k_t *p_j2k,
+                                    opj_event_mgr_t * p_manager)
+{
+    opj_cp_t *cp = &(p_j2k->m_cp);
+    const opj_image_t *image = p_j2k->m_private_image;
+    const OPJ_FLOAT64 qstep = p_j2k->m_specific_param.m_encoder.m_qstep;
+    OPJ_UINT32 tileno, compno;
+
+    for (tileno = 0; tileno < cp->tw * cp->th; tileno++) {
+        opj_tcp_t *tcp = &cp->tcps[tileno];
+        for (compno = 0; compno < image->numcomps; compno++) {
+            const OPJ_UINT32 prec = image->comps[compno].prec;
+            if (!opj_dwt_calc_explicit_stepsizes_scaled(&tcp->tccps[compno], prec,
+                    ldexp(qstep, (int)prec))) {
+                opj_event_msg(p_manager, EVT_ERROR,
+                              "QSTEP=%g gives a quantisation step that cannot be coded "
+                              "for component %u (precision %u)\n", qstep, compno, prec);
+                return OPJ_FALSE;
+            }
+        }
+    }
+    return OPJ_TRUE;
+}
+
 OPJ_BOOL opj_j2k_start_compress(opj_j2k_t *p_j2k,
                                 opj_stream_private_t *p_stream,
                                 opj_image_t * p_image,
@@ -13048,6 +13119,12 @@ OPJ_BOOL opj_j2k_start_compress(opj_j2k_t *p_j2k,
         return OPJ_FALSE;
     }
     opj_copy_image_header(p_image, p_j2k->m_private_image);
+
+    /* the step sizes depend on each component's precision, known only now */
+    if (p_j2k->m_specific_param.m_encoder.m_qstep > 0.0 &&
+            !opj_j2k_apply_qstep(p_j2k, p_manager)) {
+        return OPJ_FALSE;
+    }
 
     /* TODO_MSD: Find a better way */
     if (p_image->comps) {

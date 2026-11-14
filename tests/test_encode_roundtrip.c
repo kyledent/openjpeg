@@ -37,7 +37,8 @@
  *                         [-mct 0|1] [-mode M] [-threads N] [-dec-threads N]
  *                         [-res R] [-cblk C] [-cblkw W] [-cblkh H] [-tile T]
  *                         [-prc P] [-layers L] [-rate R] [-guard G] [-roi]
- *                         [-irrev] [-jp2] [-checker K] [-expect-reject]
+ *                         [-irrev] [-qstep Q] [-qstep-check default|smaller]
+ *                         [-jp2] [-checker K] [-expect-reject]
  *                         [-o FILE] [-i FILE] [-dump-src FILE]
  *
  * -threads / -dec-threads call opj_codec_set_threads() with the value given,
@@ -51,6 +52,13 @@
  * image decoded must then be identical to the one decoded from the same
  * parameters with mode 0, since both the MQ and the HT coder code the same
  * quantisation indices in full.
+ *
+ * -qstep Q sets the QSTEP option (the base quantisation step of the
+ * irreversible transform, a fraction of the sample range), which is how HT
+ * code-blocks are coded lossily; the decode must still equal mode 0's. With
+ * -qstep-check default the codestream must be byte-identical to one encoded
+ * without QSTEP (pass Q = 2^-prec); with -qstep-check smaller it must be
+ * smaller than that one.
  *
  * The markers are checked too: Rsiz bit 14 and a CAP marker right after SIZ
  * must be present exactly when the mode has the HT bit (0x40), and, with
@@ -78,6 +86,7 @@ typedef struct {
     int w, h, prec, sgnd, comps, mct, mode, threads, dec_threads, res;
     int cblkw, cblkh, tile, prc, layers, guard, roi, irrev, jp2, checker;
     float rate;
+    double qstep;
 } options;
 
 static OPJ_SIZE_T mb_write(void *p, OPJ_SIZE_T n, void *u)
@@ -221,9 +230,9 @@ static int encode(const options *o, int mode, membuf *m, OPJ_BOOL report)
     opj_cparameters_t p;
     opj_codec_t *c;
     opj_stream_t *s;
-    char guard_opt[32];
-    const char *extra[2];
-    int i, ok;
+    char guard_opt[32], qstep_opt[64];
+    const char *extra[3];
+    int i, n_extra = 0, ok;
 
     if (!img) {
         return 0;
@@ -262,10 +271,16 @@ static int encode(const options *o, int mode, membuf *m, OPJ_BOOL report)
     opj_set_warning_handler(c, msg, (void *)"encoder warning");
     opj_set_error_handler(c, report ? msg : quiet, (void *)"encoder error");
     ok = opj_setup_encoder(c, &p, img);
-    if (ok && o->guard >= 0) {
+    if (o->guard >= 0) {
         snprintf(guard_opt, sizeof(guard_opt), "GUARD_BITS=%d", o->guard);
-        extra[0] = guard_opt;
-        extra[1] = NULL;
+        extra[n_extra++] = guard_opt;
+    }
+    if (o->qstep != 0.0) {
+        snprintf(qstep_opt, sizeof(qstep_opt), "QSTEP=%.17g", o->qstep);
+        extra[n_extra++] = qstep_opt;
+    }
+    extra[n_extra] = NULL;
+    if (ok && n_extra > 0) {
         ok = opj_encoder_set_extra_options(c, extra);
     }
     if (ok && o->threads >= 0) {
@@ -460,6 +475,7 @@ int main(int argc, char **argv)
     options o;
     int expect_reject = 0, i, c, ok, ret = 1;
     const char *out_path = NULL, *in_path = NULL, *src_path = NULL;
+    const char *qstep_check = NULL;
     OPJ_INT32 *ref[MAX_COMPS] = { NULL, NULL, NULL, NULL };
     opj_image_t *img, *out = NULL;
     membuf m;
@@ -520,6 +536,10 @@ int main(int argc, char **argv)
             o.roi = 1;
         } else if (!strcmp(argv[i], "-irrev")) {
             o.irrev = 1;
+        } else if (!strcmp(argv[i], "-qstep") && i + 1 < argc) {
+            o.qstep = atof(argv[++i]);
+        } else if (!strcmp(argv[i], "-qstep-check") && i + 1 < argc) {
+            qstep_check = argv[++i];
         } else if (!strcmp(argv[i], "-jp2")) {
             o.jp2 = 1;
         } else if (!strcmp(argv[i], "-checker") && i + 1 < argc) {
@@ -584,6 +604,27 @@ int main(int argc, char **argv)
         }
         if (check_markers(&o, &m)) {
             goto end;
+        }
+        if (qstep_check) {
+            options plain = o;
+            membuf ref_m;
+            int same;
+            memset(&ref_m, 0, sizeof(ref_m));
+            plain.qstep = 0.0;
+            if (!encode(&plain, o.mode, &ref_m, OPJ_TRUE)) {
+                fprintf(stderr, "encode without QSTEP failed\n");
+                free(ref_m.buf);
+                goto end;
+            }
+            same = m.len == ref_m.len && !memcmp(m.buf, ref_m.buf, m.len);
+            printf("QSTEP=%.17g: %zu bytes, without it %zu bytes%s\n", o.qstep, m.len,
+                   ref_m.len, same ? " (identical)" : "");
+            free(ref_m.buf);
+            if (!strcmp(qstep_check, "default") ? !same :
+                    !strcmp(qstep_check, "smaller") ? !(m.len < ref_m.len) : 1) {
+                fprintf(stderr, "-qstep-check %s failed\n", qstep_check);
+                goto end;
+            }
         }
     }
 
