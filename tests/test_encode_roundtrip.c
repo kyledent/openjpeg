@@ -38,6 +38,7 @@
  *                         [-res R] [-cblk C] [-cblkw W] [-cblkh H] [-tile T]
  *                         [-prc P] [-layers L] [-rate R] [-guard G] [-roi]
  *                         [-irrev] [-qstep Q] [-qstep-check default|smaller]
+ *                         [-qstep-levels M0,M1,...] [-levels-check unity|smaller]
  *                         [-jp2] [-checker K] [-expect-reject]
  *                         [-o FILE] [-i FILE] [-dump-src FILE]
  *
@@ -59,6 +60,11 @@
  * -qstep-check default the codestream must be byte-identical to one encoded
  * without QSTEP (pass Q = 2^-prec); with -qstep-check smaller it must be
  * smaller than that one.
+ *
+ * -qstep-levels sets the QSTEP_LEVELS option (one multiplier of the QSTEP step
+ * per resolution, from the lowest). With -levels-check unity the codestream
+ * must be byte-identical to the one encoded with QSTEP alone (pass all 1);
+ * with -levels-check smaller it must be smaller than that one.
  *
  * The markers are checked too: Rsiz bit 14 and a CAP marker right after SIZ
  * must be present exactly when the mode has the HT bit (0x40), and, with
@@ -87,6 +93,7 @@ typedef struct {
     int cblkw, cblkh, tile, prc, layers, guard, roi, irrev, jp2, checker;
     float rate;
     double qstep;
+    const char *qstep_levels;
 } options;
 
 static OPJ_SIZE_T mb_write(void *p, OPJ_SIZE_T n, void *u)
@@ -230,8 +237,8 @@ static int encode(const options *o, int mode, membuf *m, OPJ_BOOL report)
     opj_cparameters_t p;
     opj_codec_t *c;
     opj_stream_t *s;
-    char guard_opt[32], qstep_opt[64];
-    const char *extra[3];
+    char guard_opt[32], qstep_opt[64], levels_opt[512];
+    const char *extra[4];
     int i, n_extra = 0, ok;
 
     if (!img) {
@@ -278,6 +285,10 @@ static int encode(const options *o, int mode, membuf *m, OPJ_BOOL report)
     if (o->qstep != 0.0) {
         snprintf(qstep_opt, sizeof(qstep_opt), "QSTEP=%.17g", o->qstep);
         extra[n_extra++] = qstep_opt;
+    }
+    if (o->qstep_levels) {
+        snprintf(levels_opt, sizeof(levels_opt), "QSTEP_LEVELS=%s", o->qstep_levels);
+        extra[n_extra++] = levels_opt;
     }
     extra[n_extra] = NULL;
     if (ok && n_extra > 0) {
@@ -475,7 +486,7 @@ int main(int argc, char **argv)
     options o;
     int expect_reject = 0, i, c, ok, ret = 1;
     const char *out_path = NULL, *in_path = NULL, *src_path = NULL;
-    const char *qstep_check = NULL;
+    const char *qstep_check = NULL, *levels_check = NULL;
     OPJ_INT32 *ref[MAX_COMPS] = { NULL, NULL, NULL, NULL };
     opj_image_t *img, *out = NULL;
     membuf m;
@@ -540,6 +551,10 @@ int main(int argc, char **argv)
             o.qstep = atof(argv[++i]);
         } else if (!strcmp(argv[i], "-qstep-check") && i + 1 < argc) {
             qstep_check = argv[++i];
+        } else if (!strcmp(argv[i], "-qstep-levels") && i + 1 < argc) {
+            o.qstep_levels = argv[++i];
+        } else if (!strcmp(argv[i], "-levels-check") && i + 1 < argc) {
+            levels_check = argv[++i];
         } else if (!strcmp(argv[i], "-jp2")) {
             o.jp2 = 1;
         } else if (!strcmp(argv[i], "-checker") && i + 1 < argc) {
@@ -611,6 +626,7 @@ int main(int argc, char **argv)
             int same;
             memset(&ref_m, 0, sizeof(ref_m));
             plain.qstep = 0.0;
+            plain.qstep_levels = NULL;
             if (!encode(&plain, o.mode, &ref_m, OPJ_TRUE)) {
                 fprintf(stderr, "encode without QSTEP failed\n");
                 free(ref_m.buf);
@@ -623,6 +639,27 @@ int main(int argc, char **argv)
             if (!strcmp(qstep_check, "default") ? !same :
                     !strcmp(qstep_check, "smaller") ? !(m.len < ref_m.len) : 1) {
                 fprintf(stderr, "-qstep-check %s failed\n", qstep_check);
+                goto end;
+            }
+        }
+        if (levels_check) {
+            options flat = o;
+            membuf ref_m;
+            int same;
+            memset(&ref_m, 0, sizeof(ref_m));
+            flat.qstep_levels = NULL;
+            if (!encode(&flat, o.mode, &ref_m, OPJ_TRUE)) {
+                fprintf(stderr, "encode without QSTEP_LEVELS failed\n");
+                free(ref_m.buf);
+                goto end;
+            }
+            same = m.len == ref_m.len && !memcmp(m.buf, ref_m.buf, m.len);
+            printf("QSTEP_LEVELS=%s: %zu bytes, QSTEP alone %zu bytes%s\n", o.qstep_levels,
+                   m.len, ref_m.len, same ? " (identical)" : "");
+            free(ref_m.buf);
+            if (!strcmp(levels_check, "unity") ? !same :
+                    !strcmp(levels_check, "smaller") ? !(m.len < ref_m.len) : 1) {
+                fprintf(stderr, "-levels-check %s failed\n", levels_check);
                 goto end;
             }
         }

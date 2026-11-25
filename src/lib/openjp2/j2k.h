@@ -599,6 +599,11 @@ typedef struct opj_j2k_enc {
      * each component's sample range (option QSTEP); 0 when not set */
     OPJ_FLOAT64 m_qstep;
 
+    /** Multipliers of the QSTEP step per resolution, from the lowest (option
+     * QSTEP_LEVELS); m_qstep_nlevels is 0 when not set */
+    OPJ_FLOAT64 m_qstep_levels[OPJ_J2K_MAXRLVLS];
+    OPJ_UINT32 m_qstep_nlevels;
+
 } opj_j2k_enc_t;
 
 

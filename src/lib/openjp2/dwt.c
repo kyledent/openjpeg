@@ -2188,11 +2188,11 @@ OPJ_FLOAT64 opj_dwt_getnorm_real(OPJ_UINT32 level, OPJ_UINT32 orient)
 
 void opj_dwt_calc_explicit_stepsizes(opj_tccp_t * tccp, OPJ_UINT32 prec)
 {
-    (void)opj_dwt_calc_explicit_stepsizes_scaled(tccp, prec, 1.0);
+    (void)opj_dwt_calc_explicit_stepsizes_scaled(tccp, prec, 1.0, NULL);
 }
 
 OPJ_BOOL opj_dwt_calc_explicit_stepsizes_scaled(opj_tccp_t * tccp,
-        OPJ_UINT32 prec, OPJ_FLOAT64 scale)
+        OPJ_UINT32 prec, OPJ_FLOAT64 scale, const OPJ_FLOAT64 *res_scale)
 {
     OPJ_UINT32 numbands, bandno;
     numbands = 3 * tccp->numresolutions - 2;
@@ -2209,9 +2209,10 @@ OPJ_BOOL opj_dwt_calc_explicit_stepsizes_scaled(opj_tccp_t * tccp,
             stepsize = 1.0;
         } else {
             OPJ_FLOAT64 norm = opj_dwt_getnorm_real(level, orient);
+            OPJ_FLOAT64 s = scale * (res_scale ? res_scale[resno] : 1.0);
             stepsize = (1 << (gain)) / norm;
-            if (scale != 1.0) {
-                stepsize *= scale;
+            if (s != 1.0) {
+                stepsize *= s;
             }
         }
         scaled = floor(stepsize * 8192.0);

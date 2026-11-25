@@ -1637,6 +1637,13 @@ OPJ_API OPJ_BOOL OPJ_CALLCONV opj_setup_encoder(opj_codec_t *p_codec,
  *     truncated by rate allocation, are coded lossily; with other code-block
  *     styles it can be combined with rate targets. Requires irreversible = 1.
  *     Must be given after opj_setup_encoder() and before opj_start_compress().</li>
+ * <li>QSTEP_LEVELS=m0,m1,...  One multiplier of the QSTEP step per resolution,
+ *     from resolution 0 (the LL band) to the highest, as many as there are
+ *     resolutions, each in (0, 2^20]. The subbands of resolution r are
+ *     quantised with QSTEP times mr (divided by their synthesis norms as
+ *     before), so the quantisation error can be shaped across spatial
+ *     frequency. All multipliers 1 reproduce QSTEP alone exactly. Requires
+ *     QSTEP.</li>
  * </ul>
  *
  * @param p_codec       Compressor handle

@@ -12936,6 +12936,33 @@ OPJ_BOOL opj_j2k_encoder_set_extra_options(
                 }
             }
             p_j2k->m_specific_param.m_encoder.m_qstep = qstep;
+        } else if (strncmp(*p_option_iter, "QSTEP_LEVELS=",
+                           strlen("QSTEP_LEVELS=")) == 0) {
+            const char *value = *p_option_iter + strlen("QSTEP_LEVELS=");
+            OPJ_FLOAT64 levels[OPJ_J2K_MAXRLVLS];
+            OPJ_UINT32 n = 0;
+
+            for (;;) {
+                char *end = NULL;
+                OPJ_FLOAT64 v = strtod(value, &end);
+                if (end == value || n >= OPJ_J2K_MAXRLVLS || !opj_j2k_is_finite(v) ||
+                        !(v > 0.0) || !(v <= 1048576.0) ||
+                        (*end != ',' && *end != '\0')) {
+                    opj_event_msg(p_manager, EVT_ERROR,
+                                  "Invalid value for option: %s. Should be one "
+                                  "multiplier in (0, 2^20] per resolution, comma "
+                                  "separated, from the lowest\n", *p_option_iter);
+                    return OPJ_FALSE;
+                }
+                levels[n++] = v;
+                if (*end == '\0') {
+                    break;
+                }
+                value = end + 1;
+            }
+            memcpy(p_j2k->m_specific_param.m_encoder.m_qstep_levels, levels,
+                   n * sizeof(OPJ_FLOAT64));
+            p_j2k->m_specific_param.m_encoder.m_qstep_nlevels = n;
         } else {
             opj_event_msg(p_manager, EVT_ERROR,
                           "Invalid option: %s.\n", *p_option_iter);
@@ -13085,14 +13112,24 @@ static OPJ_BOOL opj_j2k_apply_qstep(opj_j2k_t *p_j2k,
     opj_cp_t *cp = &(p_j2k->m_cp);
     const opj_image_t *image = p_j2k->m_private_image;
     const OPJ_FLOAT64 qstep = p_j2k->m_specific_param.m_encoder.m_qstep;
+    const OPJ_UINT32 nlevels = p_j2k->m_specific_param.m_encoder.m_qstep_nlevels;
+    const OPJ_FLOAT64 *levels = nlevels ?
+                                p_j2k->m_specific_param.m_encoder.m_qstep_levels : NULL;
     OPJ_UINT32 tileno, compno;
 
     for (tileno = 0; tileno < cp->tw * cp->th; tileno++) {
         opj_tcp_t *tcp = &cp->tcps[tileno];
         for (compno = 0; compno < image->numcomps; compno++) {
             const OPJ_UINT32 prec = image->comps[compno].prec;
+            if (levels && nlevels != tcp->tccps[compno].numresolutions) {
+                opj_event_msg(p_manager, EVT_ERROR,
+                              "QSTEP_LEVELS gives %u multipliers but component %u "
+                              "has %u resolutions\n", nlevels, compno,
+                              tcp->tccps[compno].numresolutions);
+                return OPJ_FALSE;
+            }
             if (!opj_dwt_calc_explicit_stepsizes_scaled(&tcp->tccps[compno], prec,
-                    ldexp(qstep, (int)prec))) {
+                    ldexp(qstep, (int)prec), levels)) {
                 opj_event_msg(p_manager, EVT_ERROR,
                               "QSTEP=%g gives a quantisation step that cannot be coded "
                               "for component %u (precision %u)\n", qstep, compno, prec);
@@ -13120,6 +13157,13 @@ OPJ_BOOL opj_j2k_start_compress(opj_j2k_t *p_j2k,
     }
     opj_copy_image_header(p_image, p_j2k->m_private_image);
 
+    /* QSTEP_LEVELS multiplies the QSTEP step, so it needs QSTEP */
+    if (p_j2k->m_specific_param.m_encoder.m_qstep_nlevels > 0 &&
+            !(p_j2k->m_specific_param.m_encoder.m_qstep > 0.0)) {
+        opj_event_msg(p_manager, EVT_ERROR,
+                      "Option QSTEP_LEVELS needs QSTEP\n");
+        return OPJ_FALSE;
+    }
     /* the step sizes depend on each component's precision, known only now */
     if (p_j2k->m_specific_param.m_encoder.m_qstep > 0.0 &&
             !opj_j2k_apply_qstep(p_j2k, p_manager)) {
